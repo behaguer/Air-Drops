@@ -1,13 +1,20 @@
--- Air Drop 0.2 By Burning Skies MYTH
+-- Air Drop 0.3 By Burning Skies MYTH
 -- Pure DCS Lua
 -- Description: This script adds Air Drop radio commands that will spawn C-130's and deliver units to a designated
---              map marker to drop cargo.
+--              map marker to drop cargo. You can also spawn and track the c130 supply containers dropped by players and use 
+--              them as "materials" to "manufacture" vehicles at the drop zone using the map marker "make {{unit}}" command.
 
 -- To use this script:
 -- 1. Place it in your mission's MISSION SCRIPTS folder
 -- 2. Load the script in the mission editor using the "Do Script" action
--- 3. Use the radio menu to call in drops
--- 4. Place map markers named "dp-alpha", "dp-bravo", etc. for drop zones (these are generated dynamically)
+
+-- then in-game:
+-- Use the radio menu to call in drops
+-- Place map markers named "dp-alpha", "dp-bravo", etc. for drop zones (these are generated dynamically)
+-- or
+-- Spawn cargo containers using the C-130J mod (or any static object with the correct name pattern) and fly and drop them from the c130j
+-- then use "make tank", "make apc", or "make humvee" map markers to spawn vehicles from nearby landed crates.
+
 -- 5. Get good.
 
 
@@ -17,14 +24,19 @@
 
 local CONFIG = {
     debug = true,  -- Set to false to disable debug messages
-    
+    production_mode = false,  -- Set to true to reduce overhead and debug output
+
     -- Aircraft settings
     aircraft_type = "C-130",  -- Aircraft type to spawn
     aircraft_fallback = "KC130",  -- Fallback if C-130 not available
     spawn_altitude = 1000,    -- Altitude in meters (approximately 3280 feet)
     cruise_speed = 130,       -- Speed in m/s (approximately 250 knots)
-    
-    -- Cargo settings
+
+    -- Timing settings
+    scan_frequency = 3,       -- How often to scan for containers/commands (seconds)
+    monitor_frequency = 2,    -- How often to monitor container status (seconds)
+
+    -- Cargo settings for NPC air drops
     cargo_types = {
         ["Tank"] = {
             name = "M1 Abrams Tank",
@@ -50,9 +62,9 @@ local CONFIG = {
 -- =====================================================================================
 
 -- Debug function that outputs to both log and players if debug is enabled
-local function debugMsg(message)
+local function debugMsg(message, force)
     env.info("[Air Drop] " .. message)
-    if CONFIG.debug then
+    if (CONFIG.debug and not CONFIG.production_mode) or force then
         trigger.action.outText(message, 10)
     end
 end
@@ -63,22 +75,545 @@ end
 -- =====================================================================================
 
 local AirDropState = {
+    initialized = false,
+    groupCounter = 0,
+    makeCounter = 0,           -- Counter for manufactured vehicles
+    playerCrates = {},         -- Track dropped cargo crates from players: [unitName] = { unit, spawnTime, been_airborne }
     spawnedGroups = {},        -- Track all spawned aircraft groups: [groupName] = { group, spawnTime }
     activeDrops = {},          -- Track active drop missions: [groupName] = { markerName, vehicleType, qty, status, spawnTime }
-    groupCounter = 0,
-    initialized = false,
     pendingDropRequests = {},  -- Store pending drop requests waiting for markers: [markerLabel] = { vehicleType, qty, requestTime }
 }
 
 
 -- =====================================================================================
+-- PLAYER CRATE FUNCTIONS
+-- =====================================================================================
+
+-- Event handler for unit spawning
+local function onEvent(event)
+    -- Log all events to see what's happening
+    if CONFIG.debug then
+        debugMsg("EVENT: Received event ID: " .. (event.id or "nil") .. " (" .. tostring(event.id) .. ")")
+    end
+    
+    -- Check for various spawn-related events
+    if event.id == world.event.S_EVENT_BIRTH or 
+       event.id == world.event.S_EVENT_UNIT_LOST or
+       event.id == world.event.S_EVENT_DEAD or
+       event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then
+        
+        local unit = event.initiator or event.target
+        if unit and unit:isExist() then
+            local unitName = unit:getName()
+            local unitTypeName = unit:getTypeName()
+            
+            if event.id == world.event.S_EVENT_BIRTH then
+                debugMsg("EVENT: Unit spawned/born - " .. unitName .. " (type: " .. unitTypeName .. ")")
+            else
+                debugMsg("EVENT: Unit event " .. event.id .. " - " .. unitName .. " (type: " .. unitTypeName .. ")")
+            end
+            
+            -- Check if this is a crate type and not already tracked (only for birth events)
+            if event.id == world.event.S_EVENT_BIRTH and isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
+                -- Add to tracking
+                AirDropState.playerCrates[unitName] = {
+                    unit = unit,
+                    spawnTime = timer.getTime(),
+                    been_airborne = false,
+                    airborne = false,
+                    typeName = unitTypeName,
+                    isStatic = true
+                }
+                
+                debugMsg("✓ Player crate detected via event and added to tracking: " .. unitName .. " (type: " .. unitTypeName .. ")")
+                debugMsg("Player crate detected: " .. unitName .. " (" .. unitTypeName .. ")")
+            end
+        end
+    end
+end
+
+-- Function to check if a static object is a player-spawned container (based on c130_supply.lua)
+local function isPlayerCrateType(unitTypeName, unitName)
+    if not unitName then 
+        return false 
+    end
+    
+    -- Check by name patterns (C-130J mod containers use specific patterns)
+    -- Pattern matches based on working c130_supply.lua implementation
+    if string.find(unitName, "^iso_container%-") or 
+       string.find(unitName, "^iso_container_small%-") or
+       string.find(unitName, "^cds_barrels%-") or
+       string.find(unitName, "^cds_crate%-") or
+       string.find(unitName, "^container_cargo%-") then
+        return true
+    end
+    
+    return false
+end
+
+-- Debug function to show all current objects (now including static objects correctly)
+local function debugShowAllObjects()
+    debugMsg("========== DEBUGGING: Showing all objects in mission ==========")
+    
+    local coalitions = {coalition.side.BLUE, coalition.side.RED, coalition.side.NEUTRAL}
+    local totalObjects = 0
+    local potentialContainers = 0
+    
+    for _, side in pairs(coalitions) do
+        debugMsg("Checking coalition " .. side .. ":")
+        
+        -- Check ground groups
+        local groups = coalition.getGroups(side, Group.Category.GROUND)
+        if groups then
+            for _, group in pairs(groups) do
+                if group and group:isExist() then
+                    local units = group:getUnits()
+                    if units then
+                        for _, unit in pairs(units) do
+                            if unit and unit:isExist() then
+                                local unitName = unit:getName()
+                                local unitTypeName = unit:getTypeName()
+                                debugMsg("  GROUND: " .. unitName .. " (type: " .. unitTypeName .. ")")
+                                if isPlayerCrateType(unitTypeName, unitName) then
+                                    debugMsg("    *** POTENTIAL CONTAINER!! ***")
+                                    potentialContainers = potentialContainers + 1
+                                end
+                                totalObjects = totalObjects + 1
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Check static objects (using correct API)
+        local statics = coalition.getStaticObjects(side)
+        if statics then
+            debugMsg("Found " .. #statics .. " static objects for coalition " .. side)
+            for _, static in pairs(statics) do
+                if static and static:isExist() then
+                    local staticName = static:getName()
+                    local staticTypeName = static:getTypeName()
+                    debugMsg("  STATIC: " .. staticName .. " (type: " .. staticTypeName .. ")")
+                    if isPlayerCrateType(staticTypeName, staticName) then
+                        debugMsg("    *** FOUND C-130J CONTAINER!! ***")
+                        potentialContainers = potentialContainers + 1
+                    end
+                    totalObjects = totalObjects + 1
+                end
+            end
+        else
+            debugMsg("No static objects found for coalition " .. side)
+        end
+    end
+    
+    debugMsg("Total objects found: " .. totalObjects .. ", potential containers: " .. potentialContainers)
+    debugMsg("========== END DEBUG OBJECT LIST ==========")
+    debugMsg("Debug complete - found " .. totalObjects .. " objects (" .. potentialContainers .. " potential containers). Check log for details.")
+end
+
+-- Debug function to search for objects by partial name match
+local function debugSearchObjects(searchPattern)
+    debugMsg("========== DEBUGGING: Searching for objects matching '" .. searchPattern .. "' ==========")
+    
+    local coalitions = {coalition.side.BLUE, coalition.side.RED, coalition.side.NEUTRAL}
+    local foundObjects = 0
+    local searchLower = string.lower(searchPattern)
+    
+    for _, side in pairs(coalitions) do
+        -- Search in ground groups
+        local groups = coalition.getGroups(side, Group.Category.GROUND)
+        if groups then
+            for _, group in pairs(groups) do
+                if group and group:isExist() then
+                    local units = group:getUnits()
+                    if units then
+                        for _, unit in pairs(units) do
+                            if unit and unit:isExist() then
+                                local unitName = unit:getName()
+                                local unitTypeName = unit:getTypeName()
+                                local nameLower = string.lower(unitName)
+                                local typeLower = string.lower(unitTypeName)
+                                
+                                if string.find(nameLower, searchLower) or string.find(typeLower, searchLower) then
+                                    debugMsg("  GROUND: " .. unitName .. " (type: " .. unitTypeName .. ")")
+                                    foundObjects = foundObjects + 1
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        
+        -- Search in static objects
+        local statics = coalition.getStaticObjects(side)
+        if statics then
+            for _, static in pairs(statics) do
+                if static and static:isExist() then
+                    local staticName = static:getName()
+                    local staticTypeName = static:getTypeName()
+                    local nameLower = string.lower(staticName)
+                    local typeLower = string.lower(staticTypeName)
+                    
+                    if string.find(nameLower, searchLower) or string.find(typeLower, searchLower) then
+                        debugMsg("  STATIC: " .. staticName .. " (type: " .. staticTypeName .. ")")
+                        if isPlayerCrateType(staticTypeName, staticName) then
+                            debugMsg("    *** CONTAINER MATCH!! ***")
+                        end
+                        foundObjects = foundObjects + 1
+                    end
+                end
+            end
+        end
+    end
+    
+    debugMsg("Found " .. foundObjects .. " objects matching '" .. searchPattern .. "'")
+    debugMsg("========== END SEARCH ==========")
+    debugMsg("Found " .. foundObjects .. " objects matching '" .. searchPattern .. "'. Check log for details.")
+end
+
+-- Debug function to show currently tracked containers
+local function debugShowTrackedContainers()
+    debugMsg("========== DEBUGGING: Currently tracked containers ==========")
+    
+    local trackedCount = 0
+    for containerName, containerData in pairs(AirDropState.playerCrates) do
+        trackedCount = trackedCount + 1
+        local status = containerData.been_airborne and "HAS BEEN AIRBORNE" or "NOT YET AIRBORNE"
+        local groundStatus = containerData.isOnGround and "ON GROUND" or "AIRBORNE"
+        local coalition = containerData.coalition or "UNKNOWN"
+        local containerType = containerData.containerType or "UNKNOWN"
+        
+        debugMsg("  CONTAINER: " .. containerName .. " [" .. containerType .. "] (" .. coalition .. ") - " .. status .. " - Currently: " .. groundStatus)
+    end
+    
+    debugMsg("Total tracked containers: " .. trackedCount)
+    debugMsg("========== END TRACKED CONTAINERS ==========")
+    debugMsg("Currently tracking " .. trackedCount .. " containers. Check log for details.")
+end
+
+-- Consolidated function to scan for containers and monitor status in one pass
+local function scanAndMonitorPlayerCrates()
+    local foundContainers = 0
+    local newContainers = 0
+    local currentTime = timer.getTime()
+
+    -- Get static objects from blue and neutral coalitions (C-130J containers spawn here)
+    local allStatics = {}
+    local blueStatics = coalition.getStaticObjects(coalition.side.BLUE)
+    if blueStatics then
+        for _, static in pairs(blueStatics) do
+            table.insert(allStatics, {obj = static, coalition = "BLUE"})
+        end
+    end
+
+    local neutralStatics = coalition.getStaticObjects(coalition.side.NEUTRAL)
+    if neutralStatics then
+        for _, static in pairs(neutralStatics) do
+            table.insert(allStatics, {obj = static, coalition = "NEUTRAL"})
+        end
+    end
+
+    -- Process existing containers (monitor status changes)
+    for unitName, crateData in pairs(AirDropState.playerCrates) do
+        if crateData.unit and crateData.unit:isExist() then
+            local unitPos = crateData.unit:getPoint()
+
+            if unitPos then
+                -- Get ground height and calculate altitude AGL
+                local groundHeight = land.getHeight({x = unitPos.x, y = unitPos.z})
+                local isOnGround = false
+                local altitudeAGL = 0
+
+                if groundHeight then
+                    altitudeAGL = unitPos.y - groundHeight
+                    isOnGround = math.abs(altitudeAGL) < 5
+                else
+                    isOnGround = unitPos.y < 100
+                    altitudeAGL = unitPos.y
+                end
+
+                -- Check for status changes
+                if not crateData.been_airborne and not isOnGround then
+                    -- Container is now airborne
+                    crateData.been_airborne = true
+                    crateData.isOnGround = false
+                    if not CONFIG.production_mode then
+                        debugMsg("Container is now AIRBORNE: " .. unitName .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)")
+                    end
+
+                elseif crateData.been_airborne and not crateData.isOnGround and isOnGround then
+                    -- Container has landed after being airborne
+                    crateData.isOnGround = true
+                    debugMsg("Container has LANDED: " .. unitName .. " at x=" .. math.floor(unitPos.x) .. ", z=" .. math.floor(unitPos.z) .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)", true)
+                end
+
+                -- Update position tracking
+                crateData.lastPosition = unitPos
+                crateData.isOnGround = isOnGround
+            end
+        else
+            -- Unit no longer exists, remove from tracking
+            if not CONFIG.production_mode then
+                debugMsg("Container removed from tracking (destroyed): " .. unitName)
+            end
+            AirDropState.playerCrates[unitName] = nil
+        end
+    end
+
+    -- Search for new containers
+    for _, staticData in pairs(allStatics) do
+        local staticObj = staticData.obj
+        if staticObj and staticObj:isExist() then
+            local objName = staticObj:getName()
+            if objName and isPlayerCrateType(nil, objName) then
+                foundContainers = foundContainers + 1
+
+                -- Check if this is a new container
+                if not AirDropState.playerCrates[objName] then
+                    local pos = staticObj:getPoint()
+                    local groundHeight = land.getHeight({x = pos.x, y = pos.z})
+                    local isOnGround = false
+                    local altitudeAGL = 0
+
+                    if groundHeight then
+                        altitudeAGL = pos.y - groundHeight
+                        isOnGround = math.abs(altitudeAGL) < 5
+                    else
+                        isOnGround = pos.y < 100
+                        altitudeAGL = pos.y
+                    end
+
+                    local containerType = "standard"
+                    if string.find(objName, "^iso_container_small%-") then
+                        containerType = "small"
+                    end
+
+                    AirDropState.playerCrates[objName] = {
+                        unit = staticObj,
+                        spawnTime = currentTime,
+                        been_airborne = not isOnGround,
+                        isStatic = true,
+                        containerType = containerType,
+                        coalition = staticData.coalition,
+                        lastPosition = pos,
+                        isOnGround = isOnGround
+                    }
+
+                    newContainers = newContainers + 1
+                    if not CONFIG.production_mode then
+                        local groundStatus = isOnGround and "ON GROUND" or "AIRBORNE"
+                        debugMsg("NEW C-130J container detected: " .. objName .. " [" .. containerType .. "] (" .. staticData.coalition .. ") - " .. groundStatus)
+                    end
+                end
+            end
+        end
+    end
+
+    -- Only log summary if containers were found or added and not in production mode
+    if newContainers > 0 and not CONFIG.production_mode then
+        debugMsg("Container scan complete. Found " .. foundContainers .. " total containers, " .. newContainers .. " new containers added to tracking.")
+    end
+end
+
+-- =====================================================================================
 -- AIR DROP FUNCTIONS
 -- =====================================================================================
 
--- Function to find map marker by name
+-- Function to handle "make" commands - spawn vehicle and despawn nearby crates
+local function handleMakeCommand(marker, vehicleType)
+    debugMsg("[MAKE] ================ MAKE COMMAND HANDLER =================")
+    debugMsg("[MAKE] Vehicle Type: " .. tostring(vehicleType))
+    debugMsg("[MAKE] Marker ID: " .. tostring(marker.idx))
+    debugMsg("[MAKE] Marker Text: " .. tostring(marker.text))
+    debugMsg("[MAKE] Marker Position: x=" .. marker.pos.x .. ", z=" .. marker.pos.z .. ", y=" .. marker.pos.y)
+
+    local cargoConfig = CONFIG.cargo_types[vehicleType]
+    if not cargoConfig then
+        debugMsg("[ERROR] Invalid vehicle type for make command: " .. tostring(vehicleType))
+        debugMsg("[ERROR] Available vehicle types: Tank, APC, Humvee")
+        debugMsg("[ERROR] CONFIG.cargo_types keys: " .. table.concat({"Tank", "APC", "Humvee"}, ", "))
+        return
+    end
+
+    debugMsg("[SUCCESS] Valid vehicle type found: " .. cargoConfig.name .. " (" .. cargoConfig.type .. ")")
+    debugMsg("[PROCESS] Processing make command: " .. vehicleType .. " at marker position")
+
+    -- Find nearby landed crates within search radius
+    local nearbyCrates = {}
+    local searchRadius = 500 -- meters
+    local totalTrackedCrates = 0
+    local airborneOrLandedCrates = 0
+
+    debugMsg("[SEARCH] Searching for landed crates within " .. searchRadius .. "m radius...")
+
+    for crateName, crateData in pairs(AirDropState.playerCrates) do
+        totalTrackedCrates = totalTrackedCrates + 1
+        debugMsg("[CRATE] Checking crate: " .. crateName .. " (been_airborne: " .. tostring(crateData.been_airborne) .. ", isOnGround: " .. tostring(crateData.isOnGround) .. ")")
+
+        if crateData.unit and crateData.unit:isExist() then
+            if crateData.been_airborne and crateData.isOnGround then
+                airborneOrLandedCrates = airborneOrLandedCrates + 1
+                local cratePos = crateData.unit:getPoint()
+                if cratePos then
+                    local dx = cratePos.x - marker.pos.x
+                    local dz = cratePos.z - marker.pos.z
+                    local distance = math.sqrt(dx * dx + dz * dz)
+
+                    debugMsg("[DISTANCE] Crate " .. crateName .. " at distance: " .. math.floor(distance) .. "m")
+
+                    if distance <= searchRadius then
+                        table.insert(nearbyCrates, {name = crateName, data = crateData, distance = distance})
+                        debugMsg("[FOUND] Found nearby landed crate: " .. crateName .. " (distance: " .. math.floor(distance) .. "m)")
+                    else
+                        debugMsg("[SKIP] Crate " .. crateName .. " too far: " .. math.floor(distance) .. "m")
+                    end
+                else
+                    debugMsg("[ERROR] Could not get position for crate: " .. crateName)
+                end
+            else
+                debugMsg("[SKIP] Crate " .. crateName .. " not eligible (not airborne+landed)")
+            end
+        else
+            debugMsg("[ERROR] Crate " .. crateName .. " does not exist or is invalid")
+        end
+    end
+
+    debugMsg("[SUMMARY] Crate Summary: " .. totalTrackedCrates .. " total tracked, " .. airborneOrLandedCrates .. " airborne+landed, " .. #nearbyCrates .. " nearby")
+
+    -- Check if we have enough materials (need 2 crates per vehicle)
+    local requiredCrates = 2
+    if #nearbyCrates < requiredCrates then
+        debugMsg("[ERROR] Insufficient materials for " .. cargoConfig.name .. " - need " .. requiredCrates .. " landed crates, found " .. #nearbyCrates)
+        debugMsg("[ERROR] MANUFACTURING FAILED: Need " .. requiredCrates .. " landed containers near marker to build " .. cargoConfig.name)
+
+        -- Remove the make command marker since we can't fulfill it
+        debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
+        trigger.action.removeMark(marker.idx)
+        debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
+        return
+    end
+
+    debugMsg("[SUCCESS] Found " .. #nearbyCrates .. " landed crates near make command marker - sufficient for manufacturing")
+
+    -- Sort crates by distance to use the closest ones
+    table.sort(nearbyCrates, function(a, b) return a.distance < b.distance end)
+
+    -- Select only the 2 closest crates for manufacturing
+    local selectedCrates = {}
+    for i = 1, requiredCrates do
+        selectedCrates[i] = nearbyCrates[i]
+        debugMsg("[MATERIALS] Selected crate " .. i .. ": " .. selectedCrates[i].name .. " (distance: " .. math.floor(selectedCrates[i].distance) .. "m)")
+    end
+
+    -- Spawn the vehicle at marker location
+    local vehicleCounter = (AirDropState.makeCounter or 0) + 1
+    AirDropState.makeCounter = vehicleCounter
+
+    local vehicleGroupName = "Made_" .. vehicleType .. "_Group_" .. vehicleCounter
+    local vehicleUnitName = "Made_" .. vehicleType .. "_" .. vehicleCounter
+
+    local vehicleGroupData = {
+        ["visible"] = false,
+        ["taskSelected"] = true,
+        ["groupId"] = math.random(1000, 9999),
+        ["hidden"] = false,
+        ["units"] = {
+            [1] = {
+                ["type"] = cargoConfig.type,
+                ["unitId"] = math.random(10000, 99999),
+                ["skill"] = "Average",
+                ["y"] = marker.pos.z,
+                ["x"] = marker.pos.x,
+                ["name"] = vehicleUnitName,
+                ["heading"] = 0,
+                ["playerCanDrive"] = true,
+            }
+        },
+        ["y"] = marker.pos.z,
+        ["x"] = marker.pos.x,
+        ["name"] = vehicleGroupName,
+        ["start_time"] = 0,
+        ["task"] = "Ground Nothing",
+        ["route"] = {
+            ["spans"] = {},
+            ["points"] = {
+                [1] = {
+                    ["alt"] = 0,
+                    ["type"] = "Turning Point",
+                    ["ETA"] = 0,
+                    ["alt_type"] = "BARO",
+                    ["formation_template"] = "",
+                    ["y"] = marker.pos.z,
+                    ["x"] = marker.pos.x,
+                    ["name"] = "",
+                    ["ETA_locked"] = true,
+                    ["speed"] = 0,
+                    ["action"] = "Off Road",
+                    ["task"] = {
+                        ["id"] = "ComboTask",
+                        ["params"] = {
+                            ["tasks"] = {}
+                        }
+                    },
+                    ["speed_locked"] = true,
+                }
+            }
+        }
+    }
+
+    debugMsg("[SPAWN] Attempting to spawn vehicle group: " .. vehicleGroupName)
+    debugMsg("[SPAWN] Vehicle type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
+    debugMsg("[SPAWN] Spawn position: x=" .. marker.pos.x .. ", z=" .. marker.pos.z)
+    debugMsg("[SPAWN] Group ID: " .. vehicleGroupData.groupId .. ", Unit ID: " .. vehicleGroupData.units[1].unitId)
+
+    -- Spawn the vehicle
+    local vehicleSuccess, vehicleResult = pcall(coalition.addGroup, country.id.USA, Group.Category.GROUND, vehicleGroupData)
+
+    if vehicleSuccess then
+        debugMsg("[SUCCESS] " .. cargoConfig.name .. " spawned successfully: " .. vehicleGroupName)
+        debugMsg("[MAKE] VEHICLE MANUFACTURED: " .. cargoConfig.name .. " created from nearby materials!")
+
+        -- Despawn the selected 2 crates used as materials
+        local despawnedCount = 0
+        debugMsg("[CLEANUP] Processing " .. requiredCrates .. " selected crates for despawn...")
+        for i, crateInfo in ipairs(selectedCrates) do
+            if crateInfo.data.unit and crateInfo.data.unit:isExist() then
+                debugMsg("[CLEANUP] Despawning material crate " .. i .. ": " .. crateInfo.name)
+                crateInfo.data.unit:destroy()
+                AirDropState.playerCrates[crateInfo.name] = nil
+                despawnedCount = despawnedCount + 1
+                debugMsg("[SUCCESS] Despawned material crate: " .. crateInfo.name)
+            else
+                debugMsg("[ERROR] Could not despawn crate: " .. crateInfo.name .. " (does not exist)")
+            end
+        end
+
+        debugMsg("[CLEANUP] Used " .. despawnedCount .. " crates as materials for manufacturing")
+        local remainingCrates = #nearbyCrates - despawnedCount
+        if remainingCrates > 0 then
+            debugMsg("[INFO] " .. remainingCrates .. " additional crates remain nearby")
+        end
+
+        -- Remove the make command marker
+        debugMsg("[CLEANUP] Removing make command marker ID: " .. marker.idx)
+        trigger.action.removeMark(marker.idx)
+        debugMsg("[SUCCESS] Removed make command marker")
+
+    else
+        debugMsg("[ERROR] Failed to spawn " .. cargoConfig.name .. ": " .. tostring(vehicleResult))
+        debugMsg("[ERROR] Error details: " .. tostring(vehicleResult))
+        debugMsg("[ERROR] Group data: " .. tostring(vehicleGroupData))
+    end
+
+    debugMsg("[MAKE] ================ MAKE COMMAND COMPLETE =================")
+end
+
+-- Function to find map marker by name and handle special "make" commands
 local function getMapMarker(markerName)
     debugMsg("Searching for map marker: " .. markerName)
-    
+
     -- Get all markers from the mission
     local markers = world.getMarkPanels()
     local compareName = string.upper(markerName)
@@ -90,10 +625,71 @@ local function getMapMarker(markerName)
             return _mark
         end
     end
-    
+
     debugMsg("WARNING: No map marker found with name '" .. markerName .. "'")
-    trigger.action.outText("WARNING: No marker found! Please create a map marker named '" .. markerName .. "'", 15)
+    debugMsg("WARNING: No marker found! Please create a map marker named '" .. markerName .. "'")
     return nil
+end
+
+-- Function to scan for and process make command markers
+local function scanForMakeCommands()
+    if not CONFIG.production_mode then
+        debugMsg("[SCAN] Scanning for make command markers...")
+    end
+
+    local markers = world.getMarkPanels()
+    if not markers then
+        if not CONFIG.production_mode then
+            debugMsg("[ERROR] No markers found on map")
+        end
+        return
+    end
+
+    local foundMakeCommands = 0
+
+    for markerId, _mark in pairs(markers) do
+        if _mark and _mark.text then
+            local text = string.upper(_mark.text)
+            if not CONFIG.production_mode then
+                debugMsg("[MARKER] Found marker ID " .. markerId .. " with text: '" .. _mark.text .. "'")
+            end
+
+            -- Check for "make" command markers
+            if string.find(text, "^MAKE ") then
+                foundMakeCommands = foundMakeCommands + 1
+                debugMsg("[MAKE] MAKE COMMAND DETECTED: " .. _mark.text)
+
+                local vehicleTypeText = string.gsub(text, "^MAKE ", "")
+                local vehicleType = nil
+
+                if not CONFIG.production_mode then
+                    debugMsg("[PARSE] Parsing vehicle type: '" .. vehicleTypeText .. "'")
+                end
+
+                -- Map marker text to CONFIG cargo types
+                if vehicleTypeText == "TANK" then
+                    vehicleType = "Tank"
+                elseif vehicleTypeText == "APC" then
+                    vehicleType = "APC"
+                elseif vehicleTypeText == "HUMVEE" then
+                    vehicleType = "Humvee"
+                end
+
+                if vehicleType and CONFIG.cargo_types[vehicleType] then
+                    debugMsg("[EXECUTE] Processing make command: " .. _mark.text .. " -> " .. vehicleType)
+                    handleMakeCommand(_mark, vehicleType)
+                else
+                    debugMsg("[ERROR] Invalid or unrecognized vehicle type in make command: " .. tostring(vehicleTypeText))
+                end
+            end
+        end
+    end
+
+    if foundMakeCommands == 0 and not CONFIG.production_mode then
+        debugMsg("[INFO] No make command markers found during scan")
+    elseif foundMakeCommands > 0 then
+        debugMsg("[COMPLETE] Processed " .. foundMakeCommands .. " make command markers")
+    end
 end
 
 -- output all world markers for debugging
@@ -186,22 +782,20 @@ local function spawnDropAircraft(vehicleType, qty)
     qty = qty or 2  -- Default to 2 if not specified (minimum drop)
 
     local cargoConfig = CONFIG.cargo_types[vehicleType]
-    
+
     if not cargoConfig then
         debugMsg("ERROR: Invalid vehicle type: " .. tostring(vehicleType))
-        trigger.action.outText("ERROR: Invalid vehicle type selected!", 10)
         return false
     end
-    
+
     if qty < 2 or qty > 8 or qty % 2 ~= 0 then
         debugMsg("ERROR: Invalid quantity: " .. tostring(qty) .. " (must be 2, 4, 6, or 8)")
-        trigger.action.outText("ERROR: Invalid quantity selected! Must be 2, 4, 6, or 8 units.", 10)
         return false
     end
-    
+
     -- Calculate number of aircraft needed (each C-130 carries 2 units)
     local aircraftQty = qty / 2
-    
+
     debugMsg("========== Starting Air Drop Mission: " .. qty .. " x " .. cargoConfig.name .. " (" .. aircraftQty .. " aircraft) ==========")
 
     -- Generate a unique marker label that isn't already in use
@@ -209,7 +803,7 @@ local function spawnDropAircraft(vehicleType, qty)
     local markerLabel = nil
     local attempts = 0
     local maxAttempts = #phoneticAlphabet
-    
+
     -- Helper function to check if a marker label is in use
     local function isMarkerLabelInUse(label)
         -- Check pending requests
@@ -226,21 +820,21 @@ local function spawnDropAircraft(vehicleType, qty)
         
         return false
     end
-    
+
     -- Keep trying until we find an unused marker label
     repeat
         local randomIndex = math.random(1, #phoneticAlphabet)
         local testLabel = "dp-" .. phoneticAlphabet[randomIndex]
-        
+
         -- Check if this label is already in use (in pending OR active)
         if not isMarkerLabelInUse(testLabel) then
             markerLabel = testLabel
             break
         end
-        
+
         attempts = attempts + 1
     until markerLabel ~= nil or attempts >= maxAttempts
-    
+
     -- If all labels are in use, append a number
     if not markerLabel then
         local counter = 1
@@ -249,9 +843,7 @@ local function spawnDropAircraft(vehicleType, qty)
             counter = counter + 1
         until not isMarkerLabelInUse(markerLabel)
     end
-    
-    debugMsg("Generated unique marker label: " .. markerLabel)
-    
+
     -- Store this pending drop request in the state system
     AirDropState.pendingDropRequests[markerLabel] = {
         vehicleType = vehicleType,
@@ -260,11 +852,11 @@ local function spawnDropAircraft(vehicleType, qty)
         cargoConfig = cargoConfig,
         requestTime = timer.getTime()
     }
-    
+
     -- output the marker so the user can use it.
-    trigger.action.outText("Drop requested: " .. qty .. " " .. cargoConfig.name .. "s (" .. aircraftQty .. " C-130s). Create marker: " .. markerLabel, 15)
+    debugMsg("Drop requested: " .. qty .. " " .. cargoConfig.name .. "s (" .. aircraftQty .. " C-130s). Create marker: " .. markerLabel)
     debugMsg("Waiting for user to place marker: " .. markerLabel)
-    
+
     return true
 end
 
@@ -280,7 +872,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
     -- Step 1: Find nearest airport
     local airport = getNearestAirport(dropMarker)
     if not airport then
-        trigger.action.outText("ERROR: No airport found for spawning!", 15)
+        debugMsg("ERROR: No airport found for spawning!")
         return false
     end
     
@@ -403,7 +995,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
     
     if success and result then
         debugMsg("✓ C-130 formation spawned successfully: " .. groupName .. " (" .. aircraftQty .. " aircraft carrying " .. qty .. " units)")
-        trigger.action.outText("C-130 formation (" .. aircraftQty .. " aircraft) inbound from " .. airport.name .. " carrying " .. qty .. " " .. cargoConfig.name .. "s!", 10)
+        debugMsg("C-130 formation (" .. aircraftQty .. " aircraft) inbound from " .. airport.name .. " carrying " .. qty .. " " .. cargoConfig.name .. "s!")
         
         -- Store spawned group in spawnedGroups (basic tracking)
         AirDropState.spawnedGroups[groupName] = {
@@ -479,7 +1071,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
                                 debugMsg("Surviving aircraft: " .. survivingAircraft .. " out of " .. maxAircraft)
                                 local unitsToDeliver = survivingAircraft * 2  -- Each C-130 carries 2 units
                                 local unitPlural = unitsToDeliver == 1 and cargoConfig.name or cargoConfig.name .. "s"
-                                trigger.action.outText("Formation dropping " .. unitsToDeliver .. " " .. unitPlural .. " from " .. survivingAircraft .. " surviving aircraft!", 8)
+                                debugMsg("Formation dropping " .. unitsToDeliver .. " " .. unitPlural .. " from " .. survivingAircraft .. " surviving aircraft!")
                                 
                                 -- Update mission status to "dropping"
                                 if AirDropState.activeDrops[args.groupName] then
@@ -572,7 +1164,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
                                         if tanksDropped == 1 and args.dropMarker.idx then
                                             debugMsg("First vehicle spawned successfully - removing drop marker ID: " .. args.dropMarker.idx)
                                             trigger.action.removeMark(args.dropMarker.idx)
-                                            trigger.action.outText("Drop marker cleared - vehicles deployed!", 5)
+                                            debugMsg("Drop marker cleared - vehicles deployed!")
                                         end
                                     else
                                         debugMsg("✗ Failed to spawn " .. cargoConfig.name .. " #" .. vehicleCounter .. " from C-130 #" .. aircraftNum .. ": " .. tostring(vehicleResult))
@@ -588,13 +1180,13 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
                                 local totalDelivered = survivingAircraft * 2  -- Each surviving aircraft delivers 2 units
                                 if survivingAircraft == maxAircraft then
                                     local vehiclePlural = totalDelivered == 1 and cargoConfig.name or cargoConfig.name .. "s"
-                                    trigger.action.outText("All " .. totalDelivered .. " " .. vehiclePlural .. " delivered successfully!", 10)
+                                    debugMsg("All " .. totalDelivered .. " " .. vehiclePlural .. " delivered successfully!")
                                 elseif survivingAircraft > 0 then
                                     local vehiclePlural = totalDelivered == 1 and cargoConfig.name or cargoConfig.name .. "s"
                                     local aircraftPlural = lostAircraft == 1 and "aircraft" or "aircraft"
-                                    trigger.action.outText(totalDelivered .. " " .. vehiclePlural .. " delivered (" .. lostAircraft .. " " .. aircraftPlural .. " lost)!", 10)
+                                    debugMsg(totalDelivered .. " " .. vehiclePlural .. " delivered (" .. lostAircraft .. " " .. aircraftPlural .. " lost)!")
                                 else
-                                    trigger.action.outText("No vehicles delivered - all " .. maxAircraft .. " aircraft lost!", 10)
+                                    debugMsg("No vehicles delivered - all " .. maxAircraft .. " aircraft lost!")
                                 end
                                 
                                 -- Update mission status to "complete"
@@ -610,7 +1202,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
                                     if despawnGroup and despawnGroup:isExist() then
                                         debugMsg("Despawning C-130 formation: " .. despawnArgs.groupName)
                                         despawnGroup:destroy()
-                                        trigger.action.outText("C-130 formation RTB (returning to base)", 8)
+                                        debugMsg("C-130 formation RTB (returning to base)")
                                     else
                                         debugMsg("C-130 formation already gone: " .. despawnArgs.groupName)
                                     end
@@ -651,7 +1243,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
         return true
     else
         debugMsg("✗ Failed to spawn C-130: " .. tostring(result))
-        trigger.action.outText("ERROR: Failed to spawn C-130 aircraft", 10)
+        debugMsg("ERROR: Failed to spawn C-130 aircraft")
         return false
     end
 end
@@ -664,32 +1256,33 @@ end
 local function createRadioMenu()
     -- Create main menu for Blue coalition
     local mainMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Call Air Drop")
-    
+
+
     -- Add submenu for different vehicle types
     local tankMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Tanks", mainMenu)
     local apcMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop APCs", mainMenu)
     local humveeMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Humvees", mainMenu)
-    
+
     -- Create quantity submenus for each vehicle type
-    
+
     -- Tank quantity menus (each C-130 carries 2 tanks)
     local tank1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Tanks)", tankMenu)
     local tank2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Tanks)", tankMenu)
     local tank3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Tanks)", tankMenu)
     local tank4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Tanks)", tankMenu)
-    
+
     -- APC quantity menus (each C-130 carries 2 APCs)
     local apc1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 APCs)", apcMenu)
     local apc2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 APCs)", apcMenu)
     local apc3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 APCs)", apcMenu)
     local apc4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 APCs)", apcMenu)
-    
+
     -- Humvee quantity menus (each C-130 carries 2 Humvees)
     local humvee1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Humvees)", humveeMenu)
     local humvee2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Humvees)", humveeMenu)
     local humvee3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Humvees)", humveeMenu)
     local humvee4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Humvees)", humveeMenu)
-    
+
     -- Add commands for Tank drops (qty represents total tanks to deliver)
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank1Menu, 
         function() spawnDropAircraft("Tank", 2) end)
@@ -699,7 +1292,7 @@ local function createRadioMenu()
         function() spawnDropAircraft("Tank", 6) end)
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank4Menu, 
         function() spawnDropAircraft("Tank", 8) end)
-    
+
     -- Add commands for APC drops (qty represents total APCs to deliver)
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc1Menu, 
         function() spawnDropAircraft("APC", 2) end)
@@ -709,7 +1302,7 @@ local function createRadioMenu()
         function() spawnDropAircraft("APC", 6) end)
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc4Menu, 
         function() spawnDropAircraft("APC", 8) end)
-    
+
     -- Add commands for Humvee drops (qty represents total Humvees to deliver)
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee1Menu, 
         function() spawnDropAircraft("Humvee", 2) end)
@@ -720,7 +1313,28 @@ local function createRadioMenu()
     missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee4Menu, 
         function() spawnDropAircraft("Humvee", 8) end)
 
-    debugMsg("Radio menu created with vehicle and quantity options - 'Call Air Drop' menu available")
+    -- Add debug commands to the main menu for troubleshooting
+    if CONFIG.debug == true then
+        debugMsg("Adding debug commands to radio menu")
+        local c130Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "C130j Air Drop")
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Show All Objects", c130Menu, 
+            function() debugShowAllObjects() end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Show Tracked Containers", c130Menu, 
+            function() debugShowTrackedContainers() end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Search 'CDS'", c130Menu, 
+            function() debugSearchObjects("cds") end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Search 'Container'", c130Menu, 
+            function() debugSearchObjects("container") end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Search 'ISO'", c130Menu, 
+            function() debugSearchObjects("iso") end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: List All Markers", c130Menu, 
+            function() outputAllMapMarkers() end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Test Make Commands", c130Menu, 
+            function() scanForMakeCommands() end)
+
+        debugMsg("Radio menu created with vehicle and quantity options - 'Call Air Drop' menu available")
+    end
+
 end
 
 
@@ -728,15 +1342,15 @@ end
 -- MARKER MONITORING SYSTEM
 -- =====================================================================================
 
--- Timer function to monitor for markers matching pending drop requests
-local function monitorPendingDropMarkers()
-    -- Check all pending drop requests
+-- Consolidated monitoring function for all pending operations
+local function masterMonitor()
+    -- Check pending drop requests
     for markerLabel, requestData in pairs(AirDropState.pendingDropRequests) do
         local dropMarker = getMapMarker(markerLabel)
         
         if dropMarker then
-            debugMsg("✓ Marker found for pending drop: " .. markerLabel)
-            trigger.action.outText("Drop marker detected! Spawning C-130s to " .. markerLabel, 10)
+            debugMsg("[SUCCESS] Marker found for pending drop: " .. markerLabel)
+            debugMsg("Drop marker detected! Spawning C-130s to " .. markerLabel, true)
             
             -- Execute the aircraft spawn, passing the markerName
             executeAircraftSpawn(dropMarker, requestData.vehicleType, requestData.qty, markerLabel)
@@ -748,14 +1362,16 @@ local function monitorPendingDropMarkers()
             local requestAge = timer.getTime() - requestData.requestTime
             if requestAge > 300 then
                 debugMsg("Drop request timed out: " .. markerLabel)
-                trigger.action.outText("Drop request expired: " .. markerLabel, 10)
                 AirDropState.pendingDropRequests[markerLabel] = nil
             end
         end
     end
     
-    -- Continue monitoring every 3 seconds
-    return timer.getTime() + 3
+    -- Scan for make commands
+    scanForMakeCommands()
+    
+    -- Continue monitoring
+    return timer.getTime() + CONFIG.scan_frequency
 end
 
 
@@ -768,13 +1384,24 @@ local function initialize()
     debugMsg("========================================")
     debugMsg("Air Drop Script v0.2 Initializing...")
     debugMsg("========================================")
-    
+
     -- Create radio menu after a short delay
     timer.scheduleFunction(createRadioMenu, {}, timer.getTime() + 2)
-
-    -- Start the marker monitoring system
-    timer.scheduleFunction(monitorPendingDropMarkers, {}, timer.getTime() + 3)
-    debugMsg("Marker monitoring system started - checking every 3 seconds")
+    
+    -- Register event handler for unit spawning
+    world.addEventHandler(onEvent)
+    debugMsg("Event handler registered for crate spawn detection")
+    
+    -- Start the consolidated monitoring system
+    timer.scheduleFunction(masterMonitor, {}, timer.getTime() + CONFIG.scan_frequency)
+    debugMsg("Master monitoring system started - checking every " .. CONFIG.scan_frequency .. " seconds")
+    
+    -- Start consolidated crate scanning and monitoring
+    timer.scheduleFunction(function()
+        scanAndMonitorPlayerCrates()
+        return timer.getTime() + CONFIG.monitor_frequency
+    end, {}, timer.getTime() + CONFIG.monitor_frequency)
+    debugMsg("Consolidated crate monitoring started - checking every " .. CONFIG.monitor_frequency .. " seconds")
     
     -- Schedule periodic cleanup of old groups
     timer.scheduleFunction(function()
@@ -784,9 +1411,15 @@ local function initialize()
     
     AirDropState.initialized = true
 
-    debugMsg("Air Drop script loaded successfully!")
-    debugMsg("Create a map marker named 'drop' and use F10 radio menu to call in C-130s")
-    debugMsg("Available vehicles: M1 Abrams Tanks, M113 APCs, M1025 HMMWVs")
+    debugMsg("Air Drop script loaded successfully!", true)
+    debugMsg("Event-based crate detection active - containers should be detected when spawned", true)
+    debugMsg("Available vehicles: M1 Abrams Tanks, M113 APCs, M1025 HMMWVs", true)
+    
+    if CONFIG.production_mode then
+        debugMsg("Running in PRODUCTION MODE - reduced debug output", true)
+    end
+    
+    debugMsg("Scan frequency: " .. CONFIG.scan_frequency .. "s, Monitor frequency: " .. CONFIG.monitor_frequency .. "s", true)
 
 end
 

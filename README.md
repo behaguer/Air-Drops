@@ -9,7 +9,6 @@ This script includes the spawning of c130's, which will carry 2 weapons platform
 4. Note the ONCE trigger is set. Click on it.
 5. Note the Time More is set to trigger on load.
 6. Click the DO SCRIPT FILE and make sure it is linked to the Air `Air Drop.lua` script.
-7. Load the mission, then access the spawning through the Radio Menu Commands.
-8. Place the map marker with the correct code
-9. Watch the c130's spawn and deliver your drop
-10. Enjoy.
+7. Load the mission as a multiplayer mission, then in-game:
+    Use the radio menu to call in drops place map markers named "dp-alpha", "dp-bravo", etc. for drop zones (these are generated dynamically) or Spawn CDS cargo containers using the C-130J mod (or any static object with the correct name pattern) and fly and drop them then use "make tank", "make apc", or "make humvee" map markers to spawn vehicles from nearby landed crates.
+8. Enjoy.
