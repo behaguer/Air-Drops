@@ -102,6 +102,25 @@ local AirDropState = {
 -- PLAYER CRATE FUNCTIONS
 -- =====================================================================================
 
+-- Function to check if a static object is a player-spawned container (based on c130_supply.lua)
+local function isPlayerCrateType(unitTypeName, unitName)
+    if not unitName then 
+        return false 
+    end
+    
+    -- Check by name patterns (C-130J mod containers use specific patterns)
+    -- Pattern matches based on working c130_supply.lua implementation
+    if string.find(unitName, "^iso_container%-") or 
+       string.find(unitName, "^iso_container_small%-") or
+       string.find(unitName, "^cds_barrels%-") or
+       string.find(unitName, "^cds_crate%-") or
+       string.find(unitName, "^container_cargo%-") then
+        return true
+    end
+    
+    return false
+end
+
 -- Event handler for unit spawning
 local function onEvent(event)
     -- Log all events to see what's happening
@@ -146,24 +165,6 @@ local function onEvent(event)
 end
 
 -- Function to check if a static object is a player-spawned container (based on c130_supply.lua)
-local function isPlayerCrateType(unitTypeName, unitName)
-    if not unitName then 
-        return false 
-    end
-    
-    -- Check by name patterns (C-130J mod containers use specific patterns)
-    -- Pattern matches based on working c130_supply.lua implementation
-    if string.find(unitName, "^iso_container%-") or 
-       string.find(unitName, "^iso_container_small%-") or
-       string.find(unitName, "^cds_barrels%-") or
-       string.find(unitName, "^cds_crate%-") or
-       string.find(unitName, "^container_cargo%-") then
-        return true
-    end
-    
-    return false
-end
-
 -- Debug function to show all current objects (now including static objects correctly)
 local function debugShowAllObjects()
     debugMsg("========== DEBUGGING: Showing all objects in mission ==========")
@@ -993,11 +994,12 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName)
     }
     
     -- Step 5: Create units dynamically based on quantity
+    -- Formation positions based on c130_template.lua (echelon left formation, 40m spacing)
     local formationPositions = {
-        [1] = {x = 0, z = 0},       -- Lead aircraft at front (tip of diamond)
-        [2] = {x = -50, z = -50},   -- Left wing (left point of diamond)
-        [3] = {x = 50, z = -50},    -- Right wing (right point of diamond)
-        [4] = {x = 0, z = -100}     -- Trail aircraft at rear (back point of diamond)
+        [1] = {x = 0, z = 0},       -- Lead aircraft
+        [2] = {x = -40, z = 40},    -- Left echelon position 1 
+        [3] = {x = -80, z = 80},    -- Left echelon position 2
+        [4] = {x = -120, z = 120}   -- Left echelon position 3
     }
     
     for i = 1, aircraftQty do
@@ -1440,7 +1442,11 @@ local function initialize()
     timer.scheduleFunction(createRadioMenu, {}, timer.getTime() + 2)
     
     -- Register event handler for unit spawning
-    world.addEventHandler(onEvent)
+    local eventHandler = {}
+    eventHandler.onEvent = function(self, event)
+        onEvent(event)
+    end
+    world.addEventHandler(eventHandler)
     debugMsg("Event handler registered for crate spawn detection")
     
     -- Start the consolidated monitoring system
