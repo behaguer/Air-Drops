@@ -1,3 +1,5 @@
+![DCS Airdrop Script for Eagle Dynamics Digital Combat Simulator.](/assets/images/head.png)
+
 # Air-Drops
 DCS mission script that allows Air Drops to be called in from the radio menu.
 
