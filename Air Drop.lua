@@ -26,6 +26,10 @@ local CONFIG = {
     debug = true,  -- Set to false to disable debug messages
     production_mode = false,  -- Set to true to reduce overhead and debug output
 
+    -- Enable features    enable_air_drops = true,  -- Set to false to disable all air drop functionality
+    enable_make_command = true,  -- Set to false to disable the "make" command
+    enable_npc_drops = true,  -- Set to false to disable NPC air drops (only player drops will work)
+
     -- Aircraft settings
     aircraft_type = "C-130",  -- Aircraft type to spawn
     aircraft_fallback = "KC130",  -- Fallback if C-130 not available
@@ -1388,65 +1392,67 @@ end
 -- =====================================================================================
 
 local function createRadioMenu()
-    -- Create main menu for Blue coalition
-    local mainMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Call Air Drop")
+
+    if CONFIG.enable_npc_drops == true then
+        -- Create main menu for Blue coalition
+        local mainMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Call Air Drop")
 
 
-    -- Add submenu for different vehicle types
-    local tankMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Tanks", mainMenu)
-    local apcMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop APCs", mainMenu)
-    local humveeMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Humvees", mainMenu)
+        -- Add submenu for different vehicle types
+        local tankMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Tanks", mainMenu)
+        local apcMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop APCs", mainMenu)
+        local humveeMenu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Drop Humvees", mainMenu)
 
-    -- Create quantity submenus for each vehicle type
+        -- Create quantity submenus for each vehicle type
 
-    -- Tank quantity menus (each C-130 carries 2 tanks)
-    local tank1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Tanks)", tankMenu)
-    local tank2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Tanks)", tankMenu)
-    local tank3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Tanks)", tankMenu)
-    local tank4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Tanks)", tankMenu)
+        -- Tank quantity menus (each C-130 carries 2 tanks)
+        local tank1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Tanks)", tankMenu)
+        local tank2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Tanks)", tankMenu)
+        local tank3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Tanks)", tankMenu)
+        local tank4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Tanks)", tankMenu)
 
-    -- APC quantity menus (each C-130 carries 2 APCs)
-    local apc1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 APCs)", apcMenu)
-    local apc2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 APCs)", apcMenu)
-    local apc3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 APCs)", apcMenu)
-    local apc4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 APCs)", apcMenu)
+        -- APC quantity menus (each C-130 carries 2 APCs)
+        local apc1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 APCs)", apcMenu)
+        local apc2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 APCs)", apcMenu)
+        local apc3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 APCs)", apcMenu)
+        local apc4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 APCs)", apcMenu)
 
-    -- Humvee quantity menus (each C-130 carries 2 Humvees)
-    local humvee1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Humvees)", humveeMenu)
-    local humvee2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Humvees)", humveeMenu)
-    local humvee3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Humvees)", humveeMenu)
-    local humvee4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Humvees)", humveeMenu)
+        -- Humvee quantity menus (each C-130 carries 2 Humvees)
+        local humvee1Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "1 C-130 (2 Humvees)", humveeMenu)
+        local humvee2Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "2 C-130s (4 Humvees)", humveeMenu)
+        local humvee3Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "3 C-130s (6 Humvees)", humveeMenu)
+        local humvee4Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "4 C-130s (8 Humvees)", humveeMenu)
 
-    -- Add commands for Tank drops (qty represents total tanks to deliver)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank1Menu, 
-        function() spawnDropAircraft("Tank", 2) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank2Menu, 
-        function() spawnDropAircraft("Tank", 4) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank3Menu, 
-        function() spawnDropAircraft("Tank", 6) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank4Menu, 
-        function() spawnDropAircraft("Tank", 8) end)
+        -- Add commands for Tank drops (qty represents total tanks to deliver)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank1Menu, 
+            function() spawnDropAircraft("Tank", 2) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank2Menu, 
+            function() spawnDropAircraft("Tank", 4) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank3Menu, 
+            function() spawnDropAircraft("Tank", 6) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", tank4Menu, 
+            function() spawnDropAircraft("Tank", 8) end)
 
-    -- Add commands for APC drops (qty represents total APCs to deliver)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc1Menu, 
-        function() spawnDropAircraft("APC", 2) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc2Menu, 
-        function() spawnDropAircraft("APC", 4) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc3Menu, 
-        function() spawnDropAircraft("APC", 6) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc4Menu, 
-        function() spawnDropAircraft("APC", 8) end)
+        -- Add commands for APC drops (qty represents total APCs to deliver)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc1Menu, 
+            function() spawnDropAircraft("APC", 2) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc2Menu, 
+            function() spawnDropAircraft("APC", 4) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc3Menu, 
+            function() spawnDropAircraft("APC", 6) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", apc4Menu, 
+            function() spawnDropAircraft("APC", 8) end)
 
-    -- Add commands for Humvee drops (qty represents total Humvees to deliver)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee1Menu, 
-        function() spawnDropAircraft("Humvee", 2) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee2Menu, 
-        function() spawnDropAircraft("Humvee", 4) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee3Menu, 
-        function() spawnDropAircraft("Humvee", 6) end)
-    missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee4Menu, 
-        function() spawnDropAircraft("Humvee", 8) end)
-
+        -- Add commands for Humvee drops (qty represents total Humvees to deliver)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee1Menu, 
+            function() spawnDropAircraft("Humvee", 2) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee2Menu, 
+            function() spawnDropAircraft("Humvee", 4) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee3Menu, 
+            function() spawnDropAircraft("Humvee", 6) end)
+        missionCommands.addCommandForCoalition(coalition.side.BLUE, "Request Drop", humvee4Menu, 
+            function() spawnDropAircraft("Humvee", 8) end)
+    end
     -- Add debug commands to the main menu for troubleshooting
     if CONFIG.debug == true then
         debugMsg("Adding debug commands to radio menu")
@@ -1501,8 +1507,10 @@ local function masterMonitor()
         end
     end
     
-    -- Scan for make commands
-    scanForMakeCommands()
+    -- Scan for make commands (only if enabled)
+    if CONFIG.enable_make_command then
+        scanForMakeCommands()
+    end
     
     -- Continue monitoring
     return timer.getTime() + CONFIG.scan_frequency
