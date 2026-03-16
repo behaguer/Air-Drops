@@ -193,6 +193,11 @@ end
 
 -- Event handler for unit spawning
 local function onEvent(event)
+    -- Safety check: ensure event is valid
+    if not event or not event.id then
+        return
+    end
+    
     -- Log all events to see what's happening
     if CONFIG.debug then
         debugMsg("EVENT: Received event ID: " .. (event.id or "nil") .. " (" .. tostring(event.id) .. ")")
@@ -205,30 +210,31 @@ local function onEvent(event)
        event.id == world.event.S_EVENT_PLAYER_ENTER_UNIT then
         
         local unit = event.initiator or event.target
-        if unit and unit:isExist() then
-            local unitName = unit:getName()
-            local unitTypeName = unit:getTypeName()
-            
-            if event.id == world.event.S_EVENT_BIRTH then
-                debugMsg("EVENT: Unit spawned/born - " .. unitName .. " (type: " .. unitTypeName .. ")")
-            else
-                debugMsg("EVENT: Unit event " .. event.id .. " - " .. unitName .. " (type: " .. unitTypeName .. ")")
-            end
-            
-            -- Check if this is a crate type and not already tracked (only for birth events)
-            if event.id == world.event.S_EVENT_BIRTH and isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
-                -- Add to tracking
-                AirDropState.playerCrates[unitName] = {
-                    unit = unit,
-                    spawnTime = timer.getTime(),
-                    been_airborne = false,
-                    airborne = false,
-                    typeName = unitTypeName,
-                    isStatic = true
-                }
+        if unit and type(unit) == "userdata" and unit.isExist and unit:isExist() then
+                local unitName = unit:getName()
+                local unitTypeName = unit:getTypeName()
                 
-                debugMsg("✓ Player crate detected via event and added to tracking: " .. unitName .. " (type: " .. unitTypeName .. ")")
-                debugMsg("Player crate detected: " .. unitName .. " (" .. unitTypeName .. ")")
+                if event.id == world.event.S_EVENT_BIRTH then
+                    debugMsg("EVENT: Unit spawned/born - " .. unitName .. " (type: " .. unitTypeName .. ")")
+                else
+                    debugMsg("EVENT: Unit event " .. event.id .. " - " .. unitName .. " (type: " .. unitTypeName .. ")")
+                end
+                
+                -- Check if this is a crate type and not already tracked (only for birth events)
+                if event.id == world.event.S_EVENT_BIRTH and isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
+                    -- Add to tracking
+                    AirDropState.playerCrates[unitName] = {
+                        unit = unit,
+                        spawnTime = timer.getTime(),
+                        been_airborne = false,
+                        airborne = false,
+                        typeName = unitTypeName,
+                        isStatic = true
+                    }
+                    
+                    debugMsg("✓ Player crate detected via event and added to tracking: " .. unitName .. " (type: " .. unitTypeName .. ")")
+                    debugMsg("Player crate detected: " .. unitName .. " (" .. unitTypeName .. ")")
+                end
             end
         end
     end
