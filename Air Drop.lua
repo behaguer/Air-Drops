@@ -1066,6 +1066,32 @@ local function getMapMarker(markerName)
     return nil
 end
 
+local function makeSmoke(colour, markerPos)
+    local smokeTypes = {
+        green = 0,
+        red = 1,
+        white = 2,
+        orange = 3,
+        blue = 4,
+    }
+    
+    local smokeTypeId = smokeTypes[string.lower(colour)]
+    if not smokeTypeId then
+        debugMsg("[WARN] Invalid smoke colour '" .. tostring(colour) .. "', defaulting to blue")
+        smokeTypeId = 4  -- Default to blue
+    end
+
+    -- Convert marker position to proper Vec3 format for DCS
+    local smokePosition = {
+        x = markerPos.x,
+        y = markerPos.y,
+        z = markerPos.z
+    }
+
+    trigger.action.smoke(smokePosition, smokeTypeId)
+    debugMsg("[SMOKE] Deployed " .. (smokeTypes[string.lower(colour)] and colour or "blue (default)") .. " smoke at x=" .. math.floor(smokePosition.x) .. ", z=" .. math.floor(smokePosition.z))
+end
+
 --- Scans for and processes make command markers on the map.
 -- @return void
 local function scanForMakeCommands()
@@ -1146,6 +1172,29 @@ local function scanForMakeCommands()
                     debugMsg("[ERROR] Invalid or unrecognized vehicle type in make command: " .. tostring(vehicleTypeText))
                 end
             end
+
+            if string.match(text, "SMOKE$") then
+                debugMsg("[MARKER] Smoke marker detected: " .. _mark.text .. " at position: x=" .. _mark.pos.x .. ", z=" .. _mark.pos.z)
+                local colour = string.gsub(text, " SMOKE", "")
+                
+                -- Get the player name who created the marker
+                local markerPlayerName = nil
+                if _mark.author then
+                    markerPlayerName = _mark.author
+                elseif _mark.playerName then
+                    markerPlayerName = _mark.playerName
+                else
+                    markerPlayerName = "Unknown Player"
+                end
+                
+                debugMsg("[SMOKE] Smoke requested by player: " .. markerPlayerName)
+                makeSmoke(colour, _mark.pos)
+                spendCMDPoints(markerPlayerName, 10)  -- Cost for smoke deployment
+                
+                -- Remove the smoke marker after processing
+                trigger.action.removeMark(_mark.idx)
+            end
+
         end
     end
 
