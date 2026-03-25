@@ -12,7 +12,7 @@
 
 local CONFIG = {
     debug = false,  -- Set to false to disable debug messages
-    production_mode = true,  -- Set to true to reduce overhead and debug output
+    production_mode = false,  -- Set to true to reduce overhead and debug output
 
     -- Enable features    enable_air_drops = true,  -- Set to false to disable all air drop functionality
     enable_make_command = true,  -- Set to false to disable the "make" command
@@ -91,7 +91,7 @@ local CONFIG = {
             type = "FARP",
             mass = 50000,  -- Mass in kg for FARP equipment
             category = "static",
-            materials_required = 4
+            materials_required = 1
         }
     },
 
@@ -140,6 +140,13 @@ local function debugMsg(message, force)
     if (CONFIG.debug and not CONFIG.production_mode) or force then
         trigger.action.outText(message, 10)
     end
+end
+
+nextUnitId = 100000;
+getNextUnitId = function()
+    nextUnitId = nextUnitId + 1
+
+    return nextUnitId
 end
 
 --- Internal helper to display messages to specific group.
@@ -286,24 +293,40 @@ end
 -- PLAYER CRATE FUNCTIONS
 -- =====================================================================================
 
+-- Player crate types
+local CONSTRUCTION_CRATES_HUGE = {
+    iso_container       = true, -- 22,046lbs
+}
+
+local CONSTRUCTION_CRATES_LARGE = {
+
+    iso_container_small = true, -- 22,046lbs
+}
+
+local CONSTRUCTION_CRATES_STANDARD = {
+    cds_barrels         = true, -- 882lbs x4
+    cds_crate           = true, -- 882lbs x4
+    container_cargo     = true, -- 8818lbs 
+}
+
 --- Determines if a unit is a player-spawned cargo container.
 -- @param unitTypeName The DCS unit type name
 -- @param unitName The unit's instance name
 -- @return boolean True if this is a trackable player crate
 local function isPlayerCrateType(unitTypeName, unitName)
-    if not unitName then 
-        return false 
+    if not unitName then
+        return false
     end
-    
-    -- Check by name patterns (C-130J mod containers use specific patterns)
-    if string.find(unitName, "^iso_container%-") or 
-       string.find(unitName, "^iso_container_small%-") or
-       string.find(unitName, "^cds_barrels%-") or
-       string.find(unitName, "^cds_crate%-") or
-       string.find(unitName, "^container_cargo%-") then
+
+    -- Check by type table
+    local isCONSTRUCTIONCRATE = CONSTRUCTION_CRATES_HUGE[unitTypeName] or false
+    local isCONSTRUCTIONCRATE = CONSTRUCTION_CRATES_LARGE[unitTypeName] or false
+    local isCONSTRUCTIONCRATE = CONSTRUCTION_CRATES_STANDARD[unitTypeName] or false
+
+    if isCONSTRUCTIONCRATE then
         return true
     end
-    
+
     return false
 end
 
@@ -326,7 +349,7 @@ local function onEvent(event)
         if unit and unit:isExist() then
             local unitName = unit:getName()
             local unitTypeName = unit:getTypeName()
-
+trigger.action.outText(unitTypeName,30,true)
             -- Check if this is a crate type and not already tracked (only for birth events)
             if event.id == world.event.S_EVENT_BIRTH and isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
                 -- Add to tracking
@@ -563,7 +586,8 @@ local function scanAndMonitorPlayerCrates()
         local staticObj = staticData.obj
         if staticObj and staticObj:isExist() then
             local objName = staticObj:getName()
-            if objName and isPlayerCrateType(nil, objName) then
+            local objType = staticObj:getTypeName()
+            if objName and isPlayerCrateType(objType, objName) then
                 foundContainers = foundContainers + 1
 
                 -- Check if this is a new container
@@ -581,25 +605,26 @@ local function scanAndMonitorPlayerCrates()
                         altitudeAGL = pos.y
                     end
 
-                    local containerType = "standard"
-                    if string.find(objName, "^iso_container_small%-") then
-                        containerType = "small"
-                    end
+				local isHuge = CONSTRUCTION_CRATES_HUGE[objType] or false				
+				local isLarge = CONSTRUCTION_CRATES_LARGE[objType] or false
+				local isStandard = CONSTRUCTION_CRATES_STANDARD[objType] or false
 
-                    -- Check if this is a test crate that should be pre-configured as landed
-                    local isTestCrate = string.find(objName, "^cds_crate%-test%-") ~= nil
-                    local finalBeenAirborne = isTestCrate and true or (not isOnGround)
-                    local finalIsOnGround = isTestCrate and true or isOnGround
+				local containerType
+				if isStandard then
+					containerType = "standard"
+				elseif isLarge then
+					containerType = "large"
+				elseif isHuge then
+					containerType = "huge"
+				end
                     
                     AirDropState.playerCrates[objName] = {
                         unit = staticObj,
                         spawnTime = currentTime,
-                        been_airborne = finalBeenAirborne,
                         isStatic = true,
                         containerType = containerType,
                         coalition = staticData.coalition,
                         lastPosition = pos,
-                        isOnGround = finalIsOnGround
                     }
 
                     newContainers = newContainers + 1
@@ -813,20 +838,27 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 
     for crateName, crateData in pairs(AirDropState.playerCrates) do
         totalTrackedCrates = totalTrackedCrates + 1
-        debugMsg("[CRATE] Checking crate: " .. crateName .. " (been_airborne: " .. tostring(crateData.been_airborne) .. ", isOnGround: " .. tostring(crateData.isOnGround) .. ")")
 
         if crateData.unit and crateData.unit:isExist() then
             if crateData.been_airborne and crateData.isOnGround then
                 airborneOrLandedCrates = airborneOrLandedCrates + 1
-                
-                -- For FARP, only accept container_cargo containers
-                local containerTypeMatch = true
-                if vehicleType == "FARP" then
-                    containerTypeMatch = string.find(crateName, "^container_cargo%-") ~= nil
-                    debugMsg("[FARP-CHECK] FARP requires container_cargo, checking " .. crateName .. ": " .. tostring(containerTypeMatch))
-                end
-                
-                if containerTypeMatch then
+
+				local containerType
+
+				local isHuge = CONSTRUCTION_CRATES_HUGE[containerType] or false	----- WIP		
+				local isLarge = CONSTRUCTION_CRATES_LARGE[containerType] or false
+				local isStandard = CONSTRUCTION_CRATES_STANDARD[containerType] or false
+
+
+				if isStandard then
+					containerType = "standard"
+				elseif isLarge then
+					containerType = "large"
+				elseif isHuge then
+					containerType = "huge"
+				end
+trigger.action.outText("test "..containerType,10)
+                if containerType == "huge" or containerType == "large" or containerType == "standard" then
                     local cratePos = crateData.unit:getPoint()
                     if cratePos then
                         local dx = cratePos.x - marker.pos.x
@@ -921,23 +953,520 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
         local spawnResult = nil
 
         if cargoConfig.category == "static" then
-            -- Spawn static object (like FARP)
-            local staticData = {
-                ["type"] = cargoConfig.type,
-                ["unitId"] = math.random(10000, 99999),
-                ["y"] = unitPosZ,
-                ["x"] = unitPosX,
-                ["name"] = itemName,
-                ["heading"] = 0,
-                ["dead"] = false,
-            }
 
-            debugMsg("[SPAWN] Attempting to spawn static object: " .. itemName)
-            debugMsg("[SPAWN] Static type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
-            debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
-            debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
+			local function getFarpUnitId(farpName)
+				local farp = StaticObject.getByName(farpName)
+				if farp then
+					return farp:getID()
+				else
+					return nil
+				end
+			end
 
-            spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
+			local farpUnitId = getFarpUnitId("CTLDFARP")  -- replace with the actual name of your FARP
+			if farpUnitId then
+				-- trigger.action.outText("FARP unitId is: " .. tostring(farpUnitId), 10)
+			else
+				trigger.action.outText("FARP not found", 10)
+			end
+            -- -- Spawn static object (like FARP)
+            -- local staticData = {
+                -- ["type"] = cargoConfig.type,
+                -- ["unitId"] = math.random(10000, 99999),
+                -- ["y"] = unitPosZ,
+                -- ["x"] = unitPosX,
+                -- ["name"] = itemName,
+                -- ["heading"] = 0,
+                -- ["dead"] = false,
+            -- }
+
+
+
+	_country = 'USA'
+
+    -- -- Define the properties for the new FARP static unit
+    -- local staticUnit = {
+        -- ["type"] = "FARP",  -- Make sure this is the correct type name for the FARP in DCS
+        -- ["name"] = "CTLDFARP",  -- Reusing the same name for the new FARP
+        -- ["unitId"] = farpUnitId,  -- Get a new unique ID for the new FARP
+        -- ["category"] = "Heliports",
+        -- ["canCargo"] = false,
+        -- ["country"] = 'USA',
+        -- ["x"] = pos.x,
+        -- ["y"] = pos.z,  -- DCS uses the Z coordinate as the North-South position
+        -- ["heading"] = 0,
+    -- }
+    
+    -- -- Spawn the new FARP at the new location
+    -- mist.dynAddStatic(staticUnit)
+	
+	-- Motion Edit Start --
+    local _crate = {
+		["category"] = "Heliports",
+        ["type"] = "FARP",
+		["unitId"] = farpUnitId, --chazz
+      --  ["unitId"] = _unitId,
+        ["y"] = unitPosZ,
+        ["x"] = unitPosX,
+        ["name"] = "CTLDFARP",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+
+    _crate["country"] = _country
+    mist.dynAddStatic(_crate)
+    local _spawnedCrate = StaticObject.getByName(_crate["name"])
+    --local _spawnedCrate = coalition.addStaticObject(_country, _crate)
+
+    local _id = getNextUnitId()
+    local _CCenter = {
+        ["type"] = ".Command Center",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -70.00,
+        ["x"] = unitPosX + 70.00,
+        ["name"] = "FARP Cmd Center #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _CCenter["country"] = _country
+
+    mist.dynAddStatic(_CCenter)
+
+    local _id = getNextUnitId()
+    local _CPost = {
+        ["type"] = "FARP CP Blindage",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 45.00,
+        ["x"] = unitPosX + 55.00,
+        ["name"] = "FARP Cmd Post #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _CPost["country"] = _country
+
+    mist.dynAddStatic(_CPost)
+	
+    local _id = getNextUnitId()
+    local _ammo = {
+        ["type"] = "FARP Ammo Dump Coating",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -0.00,
+        ["x"] = unitPosX + 15.00,
+        ["name"] = "FARP Ammo Dump #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _ammo["country"] = _country
+
+    mist.dynAddStatic(_ammo)
+	
+	local _id = getNextUnitId()
+    local _fuel = {
+        ["type"] = "FARP Fuel Depot",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -0.00,
+        ["x"] = unitPosX + 25.00,
+        ["name"] = "FARP Fuel Depot #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _fuel["country"] = _country
+
+    mist.dynAddStatic(_fuel)
+
+	local _id = getNextUnitId()
+    local _ammo = {
+        ["type"] = "FARP Ammo Dump Coating",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 10.00,
+        ["x"] = unitPosX + -55.00,
+        ["name"] = "FARP Ammo Dump #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _ammo["country"] = _country
+
+    mist.dynAddStatic(_ammo)
+	
+	local _id = getNextUnitId()
+    local _fuel = {
+        ["type"] = "FARP Fuel Depot",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -00.00,
+        ["x"] = unitPosX + -50.00,
+        ["name"] = "FARP Fuel Depot #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0.,
+    }
+    _fuel["country"] = _country
+
+    mist.dynAddStatic(_fuel)
+
+
+	local _id = getNextUnitId()
+    local _tent = {
+        ["type"] = "FARP Tent",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -70.0,
+        ["x"] = unitPosX + 20.00,
+        ["name"] = "FARP Tent #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _tent["country"] = _country
+
+    mist.dynAddStatic(_tent)
+
+	local _id = getNextUnitId()
+    local _tent = {
+        ["type"] = "FARP Tent",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -60.0,
+        ["x"] = unitPosX + 20.00,
+        ["name"] = "FARP Tent #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _tent["country"] = _country
+
+    mist.dynAddStatic(_tent)
+
+	local _id = getNextUnitId()
+    local _tent = {
+        ["type"] = "FARP Tent",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -70.0,
+        ["x"] = unitPosX + 40.00,
+        ["name"] = "FARP Tent #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _tent["country"] = _country
+
+    mist.dynAddStatic(_tent)
+
+	local _id = getNextUnitId()
+    local _tent = {
+        ["type"] = "FARP Tent",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -60.0,
+        ["x"] = unitPosX + 40.00,
+        ["name"] = "FARP Tent #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _tent["country"] = _country
+
+    mist.dynAddStatic(_tent)
+	
+	local _id = getNextUnitId()
+    local _tent = {
+        ["type"] = "FARP Tent",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -10.00,
+        ["x"] = unitPosX + -70.00,
+        ["name"] = "FARP Tent #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _tent["country"] = _country
+
+    mist.dynAddStatic(_tent)	
+
+	local _id = getNextUnitId()
+    local _shelter = {
+        ["type"] = "Shelter",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -70.0,
+        ["x"] = unitPosX + -70.00,
+        ["name"] = "FARP Shelter #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _shelter["country"] = _country
+
+    mist.dynAddStatic(_shelter)
+
+	local _id = getNextUnitId()
+    local _shelter = {
+        ["type"] = "Shelter",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -40.0,
+        ["x"] = unitPosX + -70.00,
+        ["name"] = "FARP Shelter #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _shelter["country"] = _country
+
+    mist.dynAddStatic(_shelter)
+
+	local _id = getNextUnitId()
+    local _repair = {
+        ["type"] = "M 818",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 20.00,
+        ["x"] = unitPosX + - 70.00,
+        ["name"] = "FARP Repair #" .. _id,
+        ["category"] = "Unarmed",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _repair["country"] = _country
+
+    mist.dynAddStatic(_repair)
+		
+	local _id = getNextUnitId()
+    local _hemtt = {
+        ["type"] = "HEMTT TFFT",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 25.00,
+        ["x"] = unitPosX + - 70.00,
+        ["name"] = "FARP HEMTT TFFT #" .. _id,
+        ["category"] = "Unarmed",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _hemtt["country"] = _country
+
+    mist.dynAddStatic(_hemtt)
+
+	local _id = getNextUnitId()
+    local _repair = {
+        ["type"] = "M 818",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -35.00,
+        ["x"] = unitPosX + 65.00,
+        ["name"] = "FARP Repair #" .. _id,
+        ["category"] = "Unarmed",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _repair["country"] = _country
+
+    mist.dynAddStatic(_repair)
+	
+	local _id = getNextUnitId()
+    local _hemtt = {
+        ["type"] = "HEMTT TFFT",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -40.00,
+        ["x"] = unitPosX + 65.00,
+        ["name"] = "FARP HEMTT TFFT #" .. _id,
+        ["category"] = "Unarmed",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _hemtt["country"] = _country
+
+    mist.dynAddStatic(_hemtt)	
+
+	local _id = getNextUnitId()
+    local _windsock = {
+        ["type"] = "Windsock",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 80.00,
+        ["x"] = unitPosX + - 20.00,
+        ["name"] = "FARP Windsock #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    _windsock["country"] = _country
+
+    mist.dynAddStatic(_windsock)
+
+    local _id = getNextUnitId()
+    local _tower = {
+        ["type"] = "house2arm",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -25.00,
+        ["x"] = unitPosX + 85.00,
+        ["name"] = "FARP Watchtower #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _tower["country"] = _country
+
+    mist.dynAddStatic(_tower)
+	
+	local _id = getNextUnitId()
+    local _tower = {
+        ["type"] = "house2arm",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -00.00,
+        ["x"] = unitPosX + -75.00,
+        ["name"] = "FARP Watchtower #" .. _id,
+        ["category"] = "Fortifications",
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _tower["country"] = _country
+
+    mist.dynAddStatic(_tower)
+
+    local _id = getNextUnitId()
+    local _copter = {
+        ["type"] = "CH-47D",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 50.00,
+        ["x"] = unitPosX + 78.00,
+		["heading"] = 0,
+        ["name"] = "FARP Trans #" .. _id,
+        ["category"] = "Helicopters",
+        ["canCargo"] = false,
+						
+    }
+												 
+    _copter["country"] = _country
+
+							  
+
+    mist.dynAddStatic(_copter)
+	
+	local _id = getNextUnitId()
+    local _copter = {
+        ["type"] = "CH-47D",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 78.00,
+        ["x"] = unitPosX + 70.00,
+		["heading"] = 360,
+        ["name"] = "FARP Trans #" .. _id,
+        ["category"] = "Helicopters",
+        ["canCargo"] = false,
+						
+    }
+												 
+    _copter["country"] = _country
+
+    mist.dynAddStatic(_copter)
+
+	local _id = getNextUnitId()
+    local _trans= {
+        ["type"] = "Ural-375",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 10.00,
+        ["x"] = unitPosX + 15.00,
+        ["name"] = "FARP Trans #" .. _id,
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _trans["country"] = _country
+
+    mist.dynAddStatic(_trans)
+
+	local _id = getNextUnitId()
+    local _trans = {
+        ["type"] = "Ural-375",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + 10.00,
+        ["x"] = unitPosX + 30.00,
+        ["name"] = "FARP Trans #" .. _id,
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _trans["country"] = _country
+
+    mist.dynAddStatic(_trans)
+
+	local _id = getNextUnitId()
+    local _trans = {
+        ["type"] = "Hummer",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -65.00,
+        ["x"] = unitPosX + -45.00,
+        ["name"] = "FARP Lights #" .. _id,
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _trans["country"] = _country
+
+    mist.dynAddStatic(_trans)
+
+	local _id = getNextUnitId()
+    local _trans = {
+        ["type"] = "Hummer",
+     --   ["unitId"] = _id,
+        ["rate"] = 100,
+        ["y"] = unitPosZ + -58.00,
+        ["x"] = unitPosX + -45.00,
+        ["name"] = "FARP Lights #" .. _id,
+        ["canCargo"] = false,
+        ["heading"] = 0,
+    }
+    --coalition.addStaticObject(_country, _tower)
+    _trans["country"] = _country
+
+    mist.dynAddStatic(_trans)
+
+
+	-- CTLD Farp Text -- Chazz
+	local farpTextID = 1000000
+	trigger.action.removeMark(farpTextID)
+	local farpText = "CTLDFARP"
+	-- White text, blue background
+	local textColor = {1, 1, 1, 0.8}
+	local fillColor = {0, 0, 0.7, 0.6}
+	local fontSize = 14
+	
+	trigger.action.textToAll(
+		-1,                                 -- All coalitions
+		farpTextID,                         -- Unique ID for this text element
+		{x = unitPosX, y = 0, z = unitPosZ},  -- FARP position on map
+		textColor,
+		fillColor,
+		fontSize,
+		true,                               -- readOnly
+		farpText
+	)
+
+-- Motion Edit End
+
+            -- spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
         elseif cargoConfig.category == "SAM_UNITS" then
             -- Spawn SAM group with multiple units and randomized positioning
             spawnSuccess = spawnSAMGroup(vehicleType, itemName, unitPosX, unitPosZ)
@@ -1890,7 +2419,7 @@ airDropEventHandler.onEvent = function(self, event)
             debugMsg("Player entered unit: " .. playerName .. " (Group: " .. groupName .. ", ID: " .. groupID .. ")")
             
             if CONFIG.enable_npc_drops then
-                createPlayerSpecificMenu(groupID, playerName)
+                -- createPlayerSpecificMenu(groupID, playerName)
                 debugMsg("Radio menu created/updated for player: " .. playerName)
             end
         end
@@ -1997,8 +2526,8 @@ local function initialize()
     debugMsg("Air Drop Script v0.2 Initializing...")
     debugMsg("========================================")
 
-    -- Create radio menu after a short delay
-    timer.scheduleFunction(createRadioMenu, {}, timer.getTime() + 2)
+    -- -- Create radio menu after a short delay
+    -- timer.scheduleFunction(createRadioMenu, {}, timer.getTime() + 2)
 
     -- Register event handler for birth events and unit spawning
     world.addEventHandler(airDropEventHandler)
