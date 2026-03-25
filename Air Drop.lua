@@ -294,7 +294,33 @@ local function isPlayerCrateType(unitTypeName, unitName)
     if not unitName then 
         return false 
     end
-    
+
+    -- Check by name patterns (helo containers types use specific patterns)
+    if unitTypeName == "iso_container" or 
+       unitTypeName == "iso_container_small" or
+       unitTypeName == "pipes_small_cargo" or
+       unitTypeName == "pipes_big_cargo" or
+       unitTypeName == "tetrapod_cargo" or
+       unitTypeName == "trunks_small_cargo" or
+       unitTypeName == "trunks_long_cargo" or
+       unitTypeName == "oiltank_cargo" or
+       unitTypeName == "m117_cargo" or
+       unitTypeName == "fueltank_cargo" or
+       unitTypeName == "f_bar_cargo" or
+       unitTypeName == "uh1h_cargo" or
+       unitTypeName == "barrels_cargo" or
+       unitTypeName == "M92_MRE_Pallet" or
+       unitTypeName == "M92_Ammo_Pallet" or
+       unitTypeName == "M92_10ft_Container" or
+       unitTypeName == "l118" or
+       unitTypeName == "M92_Concrete_Narrier_Cargo" or
+       unitTypeName == "cds_barrels" or
+       unitTypeName == "cds_crate" or
+       unitTypeName == "ammo_cargo" or
+       unitTypeName == "container_cargo" then
+        return true
+    end
+
     -- Check by name patterns (C-130J mod containers use specific patterns)
     if string.find(unitName, "^iso_container%-") or 
        string.find(unitName, "^iso_container_small%-") or
@@ -303,6 +329,8 @@ local function isPlayerCrateType(unitTypeName, unitName)
        string.find(unitName, "^container_cargo%-") then
         return true
     end
+
+    debugMsg("Unit '" .. unitName .. "' of type '" .. unitTypeName .. "' does not match player crate type patterns.")
     
     return false
 end
@@ -563,7 +591,7 @@ local function scanAndMonitorPlayerCrates()
         local staticObj = staticData.obj
         if staticObj and staticObj:isExist() then
             local objName = staticObj:getName()
-            if objName and isPlayerCrateType(nil, objName) then
+            if objName and isPlayerCrateType(staticObj:getTypeName(), objName) then
                 foundContainers = foundContainers + 1
 
                 -- Check if this is a new container
@@ -936,6 +964,10 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
             debugMsg("[SPAWN] Static type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
             debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
             debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
+
+            if cargoConfig.type == "FARP" then
+                -- TODO: Spawn a better farp here or default
+            end
 
             spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
         elseif cargoConfig.category == "SAM_UNITS" then
