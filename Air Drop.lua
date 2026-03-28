@@ -91,7 +91,10 @@ local CONFIG = {
             type = "FARP",
             mass = 50000,  -- Mass in kg for FARP equipment
             category = "static",
-            materials_required = 4
+            materials_required = {
+                container_cargo = 4,
+                uh1h_cargo = 7
+            }
         }
     },
 
@@ -847,11 +850,22 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
             if crateData.been_airborne and crateData.isOnGround then
                 airborneOrLandedCrates = airborneOrLandedCrates + 1
                 
-                -- For FARP, only accept container_cargo containers
+                -- Check if container type matches requirements for this vehicle type
                 local containerTypeMatch = true
+                
                 if vehicleType == "FARP" then
-                    containerTypeMatch = string.find(crateName, "^container_cargo%-") ~= nil
-                    debugMsg("[FARP-CHECK] FARP requires container_cargo, checking " .. crateName .. ": " .. tostring(containerTypeMatch))
+                    -- For FARP, check if container type is in materials_required
+                    containerTypeMatch = false
+                    if type(cargoConfig.materials_required) == "table" then
+                        local materialRequirements = cargoConfig.materials_required  -- Type-safe reference
+                        for materialType, _ in pairs(materialRequirements) do
+                            if string.find(crateName, "^" .. materialType .. "%-") then
+                                containerTypeMatch = true
+                                break
+                            end
+                        end
+                    end
+                    debugMsg("[FARP-CHECK] FARP container type check for " .. crateName .. ": " .. tostring(containerTypeMatch))
                 end
                 
                 if containerTypeMatch then
@@ -886,36 +900,112 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     debugMsg("[SUMMARY] Crate Summary: " .. totalTrackedCrates .. " total tracked, " .. airborneOrLandedCrates .. " airborne+landed, " .. #nearbyCrates .. " nearby")
 
     -- Calculate how many units can be made
-    local requiredCrates = cargoConfig.materials_required or 2
-    local maxUnits = math.floor(#nearbyCrates / requiredCrates)
-    local unitsToMake = makeAll and maxUnits or 1
+    local requiredCrates, unitsToMake, cratesToUse, selectedCrates
     
-    if #nearbyCrates < requiredCrates then
-        debugMsg("[ERROR] Insufficient materials for " .. cargoConfig.name .. " - need " .. requiredCrates .. " landed crates, found " .. #nearbyCrates)
-        setMsgToAll("Unable to build you need " .. requiredCrates .. " landed containers of the right type near marker to build " .. cargoConfig.name, 10, 0, false)
+    if vehicleType == "FARP" and type(cargoConfig.materials_required) == "table" then
+        -- Special handling for FARP - different container types have different requirements
+        local materialRequirements = cargoConfig.materials_required
+        local containerCounts = {}
+        
+        -- Initialize counts for all material types
+        for materialType, _ in pairs(materialRequirements) do
+            containerCounts[materialType] = 0
+        end
+        
+        -- Count each container type
+        for _, crateInfo in ipairs(nearbyCrates) do
+            for materialType, _ in pairs(materialRequirements) do
+                if string.find(crateInfo.name, "^" .. materialType .. "%-") then
+                    containerCounts[materialType] = containerCounts[materialType] + 1
+                    break
+                end
+            end
+        end
+        
+        debugMsg("[FARP-MATERIALS] Available: " .. (containerCounts.container_cargo or 0) .. " container_cargo, " .. (containerCounts.uh1h_cargo or 0) .. " uh1h_cargo")
+        
+        -- Calculate how many FARPs can be built from each material type
+        local maxUnitsFromMaterials = {}
+        local bestMaterialType = nil
+        local maxPossibleUnits = 0
+        
+        for materialType, requiredCount in pairs(materialRequirements) do
+            local availableCount = containerCounts[materialType] or 0
+            maxUnitsFromMaterials[materialType] = math.floor(availableCount / requiredCount)
+            
+            if maxUnitsFromMaterials[materialType] > maxPossibleUnits then
+                maxPossibleUnits = maxUnitsFromMaterials[materialType]
+                bestMaterialType = materialType
+            end
+        end
+        
+        unitsToMake = makeAll and maxPossibleUnits or 1
+        
+        if maxPossibleUnits == 0 then
+            local requirements = {}
+            for materialType, requiredCount in pairs(materialRequirements) do
+                table.insert(requirements, requiredCount .. " " .. materialType)
+            end
+            local requirementText = table.concat(requirements, " OR ")
+            
+            debugMsg("[ERROR] Insufficient materials for FARP - need " .. requirementText)
+            setMsgToAll("Unable to build FARP - need " .. requirementText .. " near marker", 10, 0, false)
 
-        -- Remove the make command marker since we can't fulfill it
-        debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
-        trigger.action.removeMark(marker.idx)
-        debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
-        return
+            -- Remove the make command marker since we can't fulfill it
+            debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
+            trigger.action.removeMark(marker.idx)
+            debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
+            return
+        end
+        
+        -- Select containers to use (use the most efficient material type available)
+        selectedCrates = {}
+        cratesToUse = unitsToMake * materialRequirements[bestMaterialType]
+        local materialsUsed = 0
+        
+        for _, crateInfo in ipairs(nearbyCrates) do
+            if materialsUsed >= cratesToUse then break end
+            if string.find(crateInfo.name, "^" .. bestMaterialType .. "%-") then
+                table.insert(selectedCrates, crateInfo)
+                materialsUsed = materialsUsed + 1
+            end
+        end
+        
+        debugMsg("[FARP-MATERIALS] Using " .. cratesToUse .. " " .. bestMaterialType .. " containers")
+        
+    else
+        -- Standard handling for other vehicle types
+        requiredCrates = type(cargoConfig.materials_required) == "number" and cargoConfig.materials_required or 2
+        local maxUnits = math.floor(#nearbyCrates / requiredCrates)
+        unitsToMake = makeAll and maxUnits or 1
+        
+        if #nearbyCrates < requiredCrates then
+            debugMsg("[ERROR] Insufficient materials for " .. cargoConfig.name .. " - need " .. requiredCrates .. " landed crates, found " .. #nearbyCrates)
+            setMsgToAll("Unable to build - need " .. requiredCrates .. " landed containers of the right type near marker to build " .. cargoConfig.name, 10, 0, false)
+
+            -- Remove the make command marker since we can't fulfill it
+            debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
+            trigger.action.removeMark(marker.idx)
+            debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
+            return
+        end
+
+        -- Sort crates by distance to use the closest ones
+        table.sort(nearbyCrates, function(a, b) return a.distance < b.distance end)
+
+        -- Select the closest crates for manufacturing
+        cratesToUse = unitsToMake * requiredCrates
+        selectedCrates = {}
+        for i = 1, cratesToUse do
+            selectedCrates[i] = nearbyCrates[i]
+            debugMsg("[MATERIALS] Selected crate " .. i .. ": " .. selectedCrates[i].name .. " (distance: " .. math.floor(selectedCrates[i].distance) .. "m)")
+        end
     end
 
     if makeAll then
-        debugMsg("[SUCCESS] MAKE ALL command - can manufacture " .. unitsToMake .. " " .. cargoConfig.name .. "s from " .. #nearbyCrates .. " available crates")
+        debugMsg("[SUCCESS] MAKE ALL command - can manufacture " .. unitsToMake .. " " .. cargoConfig.name .. "s from " .. cratesToUse .. " available crates")
     else
-        debugMsg("[SUCCESS] Found " .. #nearbyCrates .. " landed crates near make command marker - sufficient for manufacturing")
-    end
-
-    -- Sort crates by distance to use the closest ones
-    table.sort(nearbyCrates, function(a, b) return a.distance < b.distance end)
-
-    -- Select the closest crates for manufacturing
-    local cratesToUse = unitsToMake * requiredCrates
-    local selectedCrates = {}
-    for i = 1, cratesToUse do
-        selectedCrates[i] = nearbyCrates[i]
-        debugMsg("[MATERIALS] Selected crate " .. i .. ": " .. selectedCrates[i].name .. " (distance: " .. math.floor(selectedCrates[i].distance) .. "m)")
+        debugMsg("[SUCCESS] Found sufficient materials for manufacturing")
     end
 
     debugMsg("[MANUFACTURING] Creating " .. unitsToMake .. " " .. cargoConfig.name .. "(s) using " .. cratesToUse .. " crates")
