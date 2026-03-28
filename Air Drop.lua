@@ -365,13 +365,44 @@ local function onEvent(event)
                 
                 -- Now do the full check and add if it's a player crate type
                 if isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
+                    local pos = unit:getPoint()
+                    local groundHeight = land.getHeight({x = pos.x, y = pos.z})
+                    local isOnGround = false
+                    local altitudeAGL = 0
+
+                    if groundHeight then
+                        altitudeAGL = pos.y - groundHeight
+                        isOnGround = math.abs(altitudeAGL) < 5
+                    else
+                        isOnGround = pos.y < 100
+                        altitudeAGL = pos.y
+                    end
+
+                    -- Determine container type
+                    local containerType = "standard"
+                    if string.find(unitName, "^iso_container_small%-") then
+                        containerType = "small"
+                    end
+
+                    -- Check if this is a test crate that should be pre-configured as landed
+                    local isTestCrate = string.find(unitName, "^cds_crate%-test%-") ~= nil
+                    local finalBeenAirborne = isTestCrate and true or (not isOnGround)
+                    local finalIsOnGround = isTestCrate and true or isOnGround
+
+                    -- Determine coalition (best effort)
+                    local coalition = "BLUE"  -- Default, since most containers spawn on blue side
+                    
                     AirDropState.playerCrates[unitName] = {
                         unit = unit,
                         spawnTime = timer.getTime(),
-                        been_airborne = false,
-                        airborne = false,
+                        been_airborne = finalBeenAirborne,
+                        airborne = not finalIsOnGround,
                         typeName = unitTypeName,
-                        isStatic = true
+                        isStatic = true,
+                        containerType = containerType,
+                        coalition = coalition,
+                        lastPosition = pos,
+                        isOnGround = finalIsOnGround
                     }
                     debugMsg("✓ Player crate detected via event and added to tracking: " .. unitName .. " (type: " .. unitTypeName .. ")")
                 end
@@ -534,30 +565,13 @@ local function debugShowTrackedContainers()
     debugMsg("Currently tracking " .. trackedCount .. " containers. Check log for details.")
 end
 
---- Consolidated function to scan for containers and monitor status in one pass.
+--- Monitors status of already-tracked containers (airborne/landed state changes).
+-- New container detection is handled by the onEvent function for better performance.
 -- @return void
 local function scanAndMonitorPlayerCrates()
-    local foundContainers = 0
-    local newContainers = 0
     local currentTime = timer.getTime()
 
-    -- Get static objects from blue and neutral coalitions (C-130J containers spawn here)
-    local allStatics = {}
-    local blueStatics = coalition.getStaticObjects(coalition.side.BLUE)
-    if blueStatics then
-        for _, static in pairs(blueStatics) do
-            table.insert(allStatics, {obj = static, coalition = "BLUE"})
-        end
-    end
-
-    local neutralStatics = coalition.getStaticObjects(coalition.side.NEUTRAL)
-    if neutralStatics then
-        for _, static in pairs(neutralStatics) do
-            table.insert(allStatics, {obj = static, coalition = "NEUTRAL"})
-        end
-    end
-
-    -- Process existing containers (monitor status changes)
+    -- Process existing containers (monitor status changes only)
     for unitName, crateData in pairs(AirDropState.playerCrates) do
         if crateData.unit and crateData.unit:isExist() then
             local unitPos = crateData.unit:getPoint()
@@ -602,61 +616,6 @@ local function scanAndMonitorPlayerCrates()
             end
             AirDropState.playerCrates[unitName] = nil
         end
-    end
-
-    -- Search for new containers
-    for _, staticData in pairs(allStatics) do
-        local staticObj = staticData.obj
-        if staticObj and staticObj:isExist() then
-            local objName = staticObj:getName()
-            if objName and isPlayerCrateType(staticObj:getTypeName(), objName) then
-                foundContainers = foundContainers + 1
-
-                -- Check if this is a new container
-                if not AirDropState.playerCrates[objName] then
-                    local pos = staticObj:getPoint()
-                    local groundHeight = land.getHeight({x = pos.x, y = pos.z})
-                    local isOnGround = false
-                    local altitudeAGL = 0
-
-                    if groundHeight then
-                        altitudeAGL = pos.y - groundHeight
-                        isOnGround = math.abs(altitudeAGL) < 5
-                    else
-                        isOnGround = pos.y < 100
-                        altitudeAGL = pos.y
-                    end
-
-                    local containerType = "standard"
-                    if string.find(objName, "^iso_container_small%-") then
-                        containerType = "small"
-                    end
-
-                    -- Check if this is a test crate that should be pre-configured as landed
-                    local isTestCrate = string.find(objName, "^cds_crate%-test%-") ~= nil
-                    local finalBeenAirborne = isTestCrate and true or (not isOnGround)
-                    local finalIsOnGround = isTestCrate and true or isOnGround
-                    
-                    AirDropState.playerCrates[objName] = {
-                        unit = staticObj,
-                        spawnTime = currentTime,
-                        been_airborne = finalBeenAirborne,
-                        isStatic = true,
-                        containerType = containerType,
-                        coalition = staticData.coalition,
-                        lastPosition = pos,
-                        isOnGround = finalIsOnGround
-                    }
-
-                    newContainers = newContainers + 1
-                end
-            end
-        end
-    end
-
-    -- Only log summary if containers were found or added and not in production mode
-    if newContainers > 0 and not CONFIG.production_mode then
-        debugMsg("Container scan complete. Found " .. foundContainers .. " total containers, " .. newContainers .. " new containers added to tracking.")
     end
 end
 
