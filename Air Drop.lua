@@ -570,7 +570,7 @@ local function scanAndMonitorPlayerCrates()
                 elseif crateData.been_airborne and not crateData.isOnGround and isOnGround then
                     -- Container has landed after being airborne
                     crateData.isOnGround = true
-                    debugMsg("Container has LANDED: " .. unitName .. " at x=" .. math.floor(unitPos.x) .. ", z=" .. math.floor(unitPos.z) .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)", true)
+                    debugMsg("Container has LANDED: " .. unitName .. " at x=" .. math.floor(unitPos.x) .. ", z=" .. math.floor(unitPos.z) .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)")
                 end
 
                 -- Update position tracking
@@ -820,6 +820,12 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     debugMsg("[MAKE] Marker Text: " .. tostring(marker.text))
     debugMsg("[MAKE] Marker Position: x=" .. marker.pos.x .. ", z=" .. marker.pos.z .. ", y=" .. marker.pos.y)
 
+	local markerpos = {
+		x = marker.pos.x,
+		y = marker.pos.y,
+		z = marker.pos.z
+	}
+
     local cargoConfig = CONFIG.cargo_types[vehicleType]
     if not cargoConfig then
         debugMsg("[ERROR] Invalid vehicle type for make command: " .. tostring(vehicleType))
@@ -837,9 +843,15 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     local totalTrackedCrates = 0
     local airborneOrLandedCrates = 0
 
+	local FARP_MATERIALS = {
+		uh1h_cargo = true,
+		container_cargo = true,
+	}
+
     debugMsg("[SEARCH] Searching for landed crates within " .. searchRadius .. "m radius...")
 
     for crateName, crateData in pairs(AirDropState.playerCrates) do
+		local crateType = crateData.typeName
         totalTrackedCrates = totalTrackedCrates + 1
         debugMsg("[CRATE] Checking crate: " .. crateName .. " (been_airborne: " .. tostring(crateData.been_airborne) .. ", isOnGround: " .. tostring(crateData.isOnGround) .. ")")
 
@@ -848,9 +860,10 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
                 airborneOrLandedCrates = airborneOrLandedCrates + 1
                 
                 -- For FARP, only accept container_cargo containers
-                local containerTypeMatch = true
-                if vehicleType == "FARP" then
-                    containerTypeMatch = string.find(crateName, "^container_cargo%-") ~= nil
+                local containerTypeMatch = false
+				local FarpMaterial = FARP_MATERIALS[crateType] or false	
+                if vehicleType == "FARP" and FarpMaterial then
+                    containerTypeMatch = true
                     debugMsg("[FARP-CHECK] FARP requires container_cargo, checking " .. crateName .. ": " .. tostring(containerTypeMatch))
                 end
                 
@@ -887,6 +900,24 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 
     -- Calculate how many units can be made
     local requiredCrates = cargoConfig.materials_required or 2
+
+-- WIP
+	if vehicleType == "FARP" then
+		-- Check if all nearby crates are Huey cargos before selection
+		local allHueyNearby = true
+		for _, crate in ipairs(nearbyCrates) do
+			if crate.data.typeName ~= "uh1h_cargo" then
+				allHueyNearby = false
+				break
+			end
+		end
+		if allHueyNearby then
+			requiredCrates = 7
+			debugMsg("[FARP] Using 7 crates per FARP because all crates are uh1h_cargo")
+		end
+	end
+-- WIP
+
     local maxUnits = math.floor(#nearbyCrates / requiredCrates)
     local unitsToMake = makeAll and maxUnits or 1
     
@@ -949,27 +980,14 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
         local spawnResult = nil
 
         if cargoConfig.category == "static" then
-            -- Spawn static object (like FARP)
-            local staticData = {
-                ["type"] = cargoConfig.type,
-                ["unitId"] = math.random(10000, 99999),
-                ["y"] = unitPosZ,
-                ["x"] = unitPosX,
-                ["name"] = itemName,
-                ["heading"] = 0,
-                ["dead"] = false,
-            }
 
-            debugMsg("[SPAWN] Attempting to spawn static object: " .. itemName)
-            debugMsg("[SPAWN] Static type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
-            debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
-            debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
-
-            if cargoConfig.type == "FARP" then
-                -- TODO: Spawn a better farp here or default
+            if cargoConfig.type == "FARP" then -- chazz
+				markerpos = pushAwayFromRunwaysInRandomDirection(markerpos, 8000)
+                ScheduleFarpBuild(markerpos)
             end
 
-            spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
+			spawnSuccess = true         -- mark as success so crates get removed
+			spawnResult  = "OK"
         elseif cargoConfig.category == "SAM_UNITS" then
             -- Spawn SAM group with multiple units and randomized positioning
             spawnSuccess = spawnSAMGroup(vehicleType, itemName, unitPosX, unitPosZ)
