@@ -11,7 +11,7 @@
 -- =====================================================================================
 
 local CONFIG = {
-    debug = true,  -- Set to false to disable debug messages
+    debug = false,  -- Set to false to disable debug messages
     production_mode = false,  -- Set to true to reduce overhead and debug output
 
     -- Enable features    enable_air_drops = true,  -- Set to false to disable all air drop functionality
@@ -42,11 +42,11 @@ local CONFIG = {
             type = "M-1 Abrams",
             mass = 60000,  -- Mass in kg for an M1 Abrams
             category = "vehicle",
-            materials_required = 2
+            materials_required = 6
         },
         ["APC"] = {
-            name = "M113 APC",
-            type = "M-113",
+            name = "M1126 Stryker",
+            type = "M1126 Stryker ICV",
             mass = 11000,  -- Mass in kg for an M113
             category = "vehicle",
             materials_required = 2
@@ -63,7 +63,7 @@ local CONFIG = {
             type = "M1A2C_SEP_V3",
             mass = 60000,  -- Mass in kg for an M1 Abrams
             category = "vehicle",
-            materials_required = 5
+            materials_required = 6
         },
         ["MLRS"] = {
             name = "M270 MLRS",
@@ -365,13 +365,44 @@ local function onEvent(event)
                 
                 -- Now do the full check and add if it's a player crate type
                 if isPlayerCrateType(unitTypeName, unitName) and not AirDropState.playerCrates[unitName] then
+                    local pos = unit:getPoint()
+                    local groundHeight = land.getHeight({x = pos.x, y = pos.z})
+                    local isOnGround = false
+                    local altitudeAGL = 0
+
+                    if groundHeight then
+                        altitudeAGL = pos.y - groundHeight
+                        isOnGround = math.abs(altitudeAGL) < 5
+                    else
+                        isOnGround = pos.y < 100
+                        altitudeAGL = pos.y
+                    end
+
+                    -- Determine container type
+                    local containerType = "standard"
+                    if string.find(unitName, "^iso_container_small%-") then
+                        containerType = "small"
+                    end
+
+                    -- Check if this is a test crate that should be pre-configured as landed
+                    local isTestCrate = string.find(unitName, "^cds_crate%-test%-") ~= nil
+                    local finalBeenAirborne = isTestCrate and true or (not isOnGround)
+                    local finalIsOnGround = isTestCrate and true or isOnGround
+
+                    -- Determine coalition (best effort)
+                    local coalition = "BLUE"  -- Default, since most containers spawn on blue side
+                    
                     AirDropState.playerCrates[unitName] = {
                         unit = unit,
                         spawnTime = timer.getTime(),
-                        been_airborne = false,
-                        airborne = false,
+                        been_airborne = finalBeenAirborne,
+                        airborne = not finalIsOnGround,
                         typeName = unitTypeName,
-                        isStatic = true
+                        isStatic = true,
+                        containerType = containerType,
+                        coalition = coalition,
+                        lastPosition = pos,
+                        isOnGround = finalIsOnGround
                     }
                     debugMsg("✓ Player crate detected via event and added to tracking: " .. unitName .. " (type: " .. unitTypeName .. ")")
                 end
@@ -534,30 +565,13 @@ local function debugShowTrackedContainers()
     debugMsg("Currently tracking " .. trackedCount .. " containers. Check log for details.")
 end
 
---- Consolidated function to scan for containers and monitor status in one pass.
+--- Monitors status of already-tracked containers (airborne/landed state changes).
+-- New container detection is handled by the onEvent function for better performance.
 -- @return void
 local function scanAndMonitorPlayerCrates()
-    local foundContainers = 0
-    local newContainers = 0
     local currentTime = timer.getTime()
 
-    -- Get static objects from blue and neutral coalitions (C-130J containers spawn here)
-    local allStatics = {}
-    local blueStatics = coalition.getStaticObjects(coalition.side.BLUE)
-    if blueStatics then
-        for _, static in pairs(blueStatics) do
-            table.insert(allStatics, {obj = static, coalition = "BLUE"})
-        end
-    end
-
-    local neutralStatics = coalition.getStaticObjects(coalition.side.NEUTRAL)
-    if neutralStatics then
-        for _, static in pairs(neutralStatics) do
-            table.insert(allStatics, {obj = static, coalition = "NEUTRAL"})
-        end
-    end
-
-    -- Process existing containers (monitor status changes)
+    -- Process existing containers (monitor status changes only)
     for unitName, crateData in pairs(AirDropState.playerCrates) do
         if crateData.unit and crateData.unit:isExist() then
             local unitPos = crateData.unit:getPoint()
@@ -588,7 +602,7 @@ local function scanAndMonitorPlayerCrates()
                 elseif crateData.been_airborne and not crateData.isOnGround and isOnGround then
                     -- Container has landed after being airborne
                     crateData.isOnGround = true
-                    debugMsg("Container has LANDED: " .. unitName .. " at x=" .. math.floor(unitPos.x) .. ", z=" .. math.floor(unitPos.z) .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)", true)
+                    debugMsg("Container has LANDED: " .. unitName .. " at x=" .. math.floor(unitPos.x) .. ", z=" .. math.floor(unitPos.z) .. " (altitude: " .. math.floor(altitudeAGL) .. "m AGL)")
                 end
 
                 -- Update position tracking
@@ -602,61 +616,6 @@ local function scanAndMonitorPlayerCrates()
             end
             AirDropState.playerCrates[unitName] = nil
         end
-    end
-
-    -- Search for new containers
-    for _, staticData in pairs(allStatics) do
-        local staticObj = staticData.obj
-        if staticObj and staticObj:isExist() then
-            local objName = staticObj:getName()
-            if objName and isPlayerCrateType(staticObj:getTypeName(), objName) then
-                foundContainers = foundContainers + 1
-
-                -- Check if this is a new container
-                if not AirDropState.playerCrates[objName] then
-                    local pos = staticObj:getPoint()
-                    local groundHeight = land.getHeight({x = pos.x, y = pos.z})
-                    local isOnGround = false
-                    local altitudeAGL = 0
-
-                    if groundHeight then
-                        altitudeAGL = pos.y - groundHeight
-                        isOnGround = math.abs(altitudeAGL) < 5
-                    else
-                        isOnGround = pos.y < 100
-                        altitudeAGL = pos.y
-                    end
-
-                    local containerType = "standard"
-                    if string.find(objName, "^iso_container_small%-") then
-                        containerType = "small"
-                    end
-
-                    -- Check if this is a test crate that should be pre-configured as landed
-                    local isTestCrate = string.find(objName, "^cds_crate%-test%-") ~= nil
-                    local finalBeenAirborne = isTestCrate and true or (not isOnGround)
-                    local finalIsOnGround = isTestCrate and true or isOnGround
-                    
-                    AirDropState.playerCrates[objName] = {
-                        unit = staticObj,
-                        spawnTime = currentTime,
-                        been_airborne = finalBeenAirborne,
-                        isStatic = true,
-                        containerType = containerType,
-                        coalition = staticData.coalition,
-                        lastPosition = pos,
-                        isOnGround = finalIsOnGround
-                    }
-
-                    newContainers = newContainers + 1
-                end
-            end
-        end
-    end
-
-    -- Only log summary if containers were found or added and not in production mode
-    if newContainers > 0 and not CONFIG.production_mode then
-        debugMsg("Container scan complete. Found " .. foundContainers .. " total containers, " .. newContainers .. " new containers added to tracking.")
     end
 end
 
@@ -855,140 +814,155 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     local totalTrackedCrates = 0
     local airborneOrLandedCrates = 0
 
+	local FARP_MATERIALS = {
+		uh1h_cargo = true,
+		container_cargo = true,
+	}
+
     debugMsg("[SEARCH] Searching for landed crates within " .. searchRadius .. "m radius...")
 
-    for crateName, crateData in pairs(AirDropState.playerCrates) do
-        totalTrackedCrates = totalTrackedCrates + 1
-        debugMsg("[CRATE] Checking crate: " .. crateName .. " (been_airborne: " .. tostring(crateData.been_airborne) .. ", isOnGround: " .. tostring(crateData.isOnGround) .. ")")
+	for crateName, crateData in pairs(AirDropState.playerCrates) do
+		totalTrackedCrates = totalTrackedCrates + 1
+		debugMsg("[CRATE] Checking crate: " .. crateName ..
+				 " (been_airborne: " .. tostring(crateData.been_airborne) ..
+				 ", isOnGround: " .. tostring(crateData.isOnGround) .. ")")
 
-        if crateData.unit and crateData.unit:isExist() then
-            if crateData.been_airborne and crateData.isOnGround then
-                airborneOrLandedCrates = airborneOrLandedCrates + 1
-                
-                -- Check if container type matches requirements for this vehicle type
-                local containerTypeMatch = true
-                
-                if vehicleType == "FARP" then
-                    -- For FARP, check if container type is in materials_required
-                    containerTypeMatch = false
-                    if type(cargoConfig.materials_required) == "table" then
-                        local materialRequirements = cargoConfig.materials_required  -- Type-safe reference
-                        for materialType, _ in pairs(materialRequirements) do
-                            if string.find(crateName, "^" .. materialType .. "%-") then
-                                containerTypeMatch = true
-                                break
-                            end
-                        end
-                    end
-                    debugMsg("[FARP-CHECK] FARP container type check for " .. crateName .. ": " .. tostring(containerTypeMatch))
-                end
-                
-                if containerTypeMatch then
-                    local cratePos = crateData.unit:getPoint()
-                    if cratePos then
-                        local dx = cratePos.x - marker.pos.x
-                        local dz = cratePos.z - marker.pos.z
-                        local distance = math.sqrt(dx * dx + dz * dz)
+		if crateData.unit and crateData.unit:isExist() then
+			if crateData.been_airborne and crateData.isOnGround then
+				airborneOrLandedCrates = airborneOrLandedCrates + 1
+				local crateType = crateData.typeName
 
-                        debugMsg("[DISTANCE] Crate " .. crateName .. " at distance: " .. math.floor(distance) .. "m")
+				local containerTypeMatch = true
 
-                        if distance <= searchRadius then
-                            table.insert(nearbyCrates, {name = crateName, data = crateData, distance = distance})
-                            debugMsg("[FOUND] Found nearby landed crate: " .. crateName .. " (distance: " .. math.floor(distance) .. "m)")
-                        else
-                            debugMsg("[SKIP] Crate " .. crateName .. " too far: " .. math.floor(distance) .. "m")
-                        end
-                    else
-                        debugMsg("[ERROR] Could not get position for crate: " .. crateName)
-                    end
-                else
-                    debugMsg("[SKIP] Crate " .. crateName .. " wrong type for FARP (need container_cargo)")
-                end
-            else
-                debugMsg("[SKIP] Crate " .. crateName .. " not eligible (not airborne+landed)")
-            end
-        else
-            debugMsg("[ERROR] Crate " .. crateName .. " does not exist or is invalid")
-        end
-    end
+				if vehicleType == "FARP" then
+					-- For FARP, only accept allowed material types by typeName
+					containerTypeMatch = FARP_MATERIALS[crateType] == true
+					debugMsg("[FARP-CHECK] typeName=" .. tostring(crateType) ..
+							 " => allowed=" .. tostring(containerTypeMatch))
+				end
+
+				if containerTypeMatch then
+					local cratePos = crateData.unit:getPoint()
+					if cratePos then
+						local dx = cratePos.x - marker.pos.x
+						local dz = cratePos.z - marker.pos.z
+						local distance = math.sqrt(dx * dx + dz * dz)
+
+						debugMsg("[DISTANCE] Crate " .. crateName ..
+								 " at distance: " .. math.floor(distance) .. "m")
+
+						if distance <= searchRadius then
+							table.insert(nearbyCrates, {
+								name     = crateName,
+								data     = crateData,
+								distance = distance,
+							})
+							debugMsg("[FOUND] Found nearby landed crate: " ..
+									 crateName .. " (distance: " ..
+									 math.floor(distance) .. "m)")
+						else
+							debugMsg("[SKIP] Crate " .. crateName ..
+									 " too far: " .. math.floor(distance) .. "m")
+						end
+					else
+						debugMsg("[ERROR] Could not get position for crate: " .. crateName)
+					end
+				else
+					if vehicleType == "FARP" then
+						debugMsg("[SKIP] Crate " .. crateName ..
+								 " wrong type for FARP (need container_cargo or uh1h_cargo)")
+					else
+						debugMsg("[SKIP] Crate " .. crateName ..
+								 " filtered out (non-FARP logic)")
+					end
+				end
+			else
+				debugMsg("[SKIP] Crate " .. crateName ..
+						 " not eligible (not airborne+landed)")
+			end
+		else
+			debugMsg("[ERROR] Crate " .. crateName ..
+					 " does not exist or is invalid")
+		end
+	end
 
     debugMsg("[SUMMARY] Crate Summary: " .. totalTrackedCrates .. " total tracked, " .. airborneOrLandedCrates .. " airborne+landed, " .. #nearbyCrates .. " nearby")
 
     -- Calculate how many units can be made
     local requiredCrates, unitsToMake, cratesToUse, selectedCrates
     
-    if vehicleType == "FARP" and type(cargoConfig.materials_required) == "table" then
-        -- Special handling for FARP - different container types have different requirements
-        local materialRequirements = cargoConfig.materials_required
-        local containerCounts = {}
-        
-        -- Initialize counts for all material types
-        for materialType, _ in pairs(materialRequirements) do
-            containerCounts[materialType] = 0
-        end
-        
-        -- Count each container type
-        for _, crateInfo in ipairs(nearbyCrates) do
-            for materialType, _ in pairs(materialRequirements) do
-                if string.find(crateInfo.name, "^" .. materialType .. "%-") then
-                    containerCounts[materialType] = containerCounts[materialType] + 1
-                    break
-                end
-            end
-        end
-        
-        debugMsg("[FARP-MATERIALS] Available: " .. (containerCounts.container_cargo or 0) .. " container_cargo, " .. (containerCounts.uh1h_cargo or 0) .. " uh1h_cargo")
-        
-        -- Calculate how many FARPs can be built from each material type
-        local maxUnitsFromMaterials = {}
-        local bestMaterialType = nil
-        local maxPossibleUnits = 0
-        
-        for materialType, requiredCount in pairs(materialRequirements) do
-            local availableCount = containerCounts[materialType] or 0
-            maxUnitsFromMaterials[materialType] = math.floor(availableCount / requiredCount)
-            
-            if maxUnitsFromMaterials[materialType] > maxPossibleUnits then
-                maxPossibleUnits = maxUnitsFromMaterials[materialType]
-                bestMaterialType = materialType
-            end
-        end
-        
-        unitsToMake = makeAll and maxPossibleUnits or 1
-        
-        if maxPossibleUnits == 0 then
-            local requirements = {}
-            for materialType, requiredCount in pairs(materialRequirements) do
-                table.insert(requirements, requiredCount .. " " .. materialType)
-            end
-            local requirementText = table.concat(requirements, " OR ")
-            
-            debugMsg("[ERROR] Insufficient materials for FARP - need " .. requirementText)
-            setMsgToAll("Unable to build FARP - need " .. requirementText .. " near marker", 10, 0, false)
+	if vehicleType == "FARP"
+	   and type(cargoConfig.materials_required) == "table" then
 
-            -- Remove the make command marker since we can't fulfill it
-            debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
-            trigger.action.removeMark(marker.idx)
-            debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
-            return
-        end
-        
-        -- Select containers to use (use the most efficient material type available)
-        selectedCrates = {}
-        cratesToUse = unitsToMake * materialRequirements[bestMaterialType]
-        local materialsUsed = 0
-        
-        for _, crateInfo in ipairs(nearbyCrates) do
-            if materialsUsed >= cratesToUse then break end
-            if string.find(crateInfo.name, "^" .. bestMaterialType .. "%-") then
-                table.insert(selectedCrates, crateInfo)
-                materialsUsed = materialsUsed + 1
-            end
-        end
-        
-        debugMsg("[FARP-MATERIALS] Using " .. cratesToUse .. " " .. bestMaterialType .. " containers")
-        
-    else
+		local materialRequirements = cargoConfig.materials_required
+		local containerCounts = {}
+
+		-- Count nearby crates per typeName
+		for _, crateInfo in ipairs(nearbyCrates) do
+			local crateType = crateInfo.data.typeName
+			if materialRequirements[crateType] then
+				containerCounts[crateType] = (containerCounts[crateType] or 0) + 1
+			end
+		end
+
+		debugMsg(string.format(
+			"[FARP-MATERIALS] Available: %d container_cargo, %d uh1h_cargo",
+			containerCounts.container_cargo or 0,
+			containerCounts.uh1h_cargo      or 0
+		))
+
+		-- Compute max FARPs per material type
+		local maxPossibleUnits = 0
+		local bestMaterialType = nil
+
+		for materialType, requiredCount in pairs(materialRequirements) do
+			local availableCount = containerCounts[materialType] or 0
+			local maxUnitsFromThis = math.floor(availableCount / requiredCount)
+
+			if maxUnitsFromThis > maxPossibleUnits then
+				maxPossibleUnits = maxUnitsFromThis
+				bestMaterialType = materialType
+			end
+		end
+
+		unitsToMake = makeAll and maxPossibleUnits or 1
+
+		if maxPossibleUnits == 0 then
+			local requirements = {}
+			for materialType, requiredCount in pairs(materialRequirements) do
+				table.insert(requirements, requiredCount .. " " .. materialType)
+			end
+			local requirementText = table.concat(requirements, " OR ")
+
+			debugMsg("[ERROR] Insufficient materials for FARP - need " .. requirementText)
+			setMsgToAll("Unable to build FARP - need " .. requirementText .. " near marker", 10, 0, false)
+
+			debugMsg("[CLEANUP] Removing unfulfillable make command marker ID: " .. marker.idx)
+			trigger.action.removeMark(marker.idx)
+			debugMsg("[MAKE] ================ MAKE COMMAND FAILED - INSUFFICIENT MATERIALS =================")
+			return
+		end
+
+		-- Select crates of the chosen material type
+		selectedCrates = {}
+		requiredCrates = materialRequirements[bestMaterialType]
+		cratesToUse    = unitsToMake * requiredCrates
+
+		local materialsUsed = 0
+		for _, crateInfo in ipairs(nearbyCrates) do
+			if materialsUsed >= cratesToUse then break end
+			if crateInfo.data.typeName == bestMaterialType then
+				table.insert(selectedCrates, crateInfo)
+				materialsUsed = materialsUsed + 1
+			end
+		end
+
+		debugMsg(string.format(
+			"[FARP-MATERIALS] Using %d %s containers to build %d FARP(s)",
+			cratesToUse, bestMaterialType, unitsToMake
+		))
+
+	else
         -- Standard handling for other vehicle types
         requiredCrates = type(cargoConfig.materials_required) == "number" and cargoConfig.materials_required or 2
         local maxUnits = math.floor(#nearbyCrates / requiredCrates)
@@ -1071,10 +1045,11 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
             debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
 
             if cargoConfig.type == "FARP" then
-                -- TODO: Spawn a better farp here or default
+				-- add advanced farp spawm function here
             end
 
             spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
+
         elseif cargoConfig.category == "SAM_UNITS" then
             -- Spawn SAM group with multiple units and randomized positioning
             spawnSuccess = spawnSAMGroup(vehicleType, itemName, unitPosX, unitPosZ)
@@ -1093,7 +1068,7 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
                     [1] = {
                         ["type"] = cargoConfig.type,
                         ["unitId"] = math.random(10000, 99999),
-                        ["skill"] = "Average",
+                        ["skill"] = "Excellent",
                         ["y"] = unitPosZ,
                         ["x"] = unitPosX,
                         ["name"] = vehicleUnitName,
@@ -1247,7 +1222,7 @@ local function scanForMakeCommands()
         if _mark and _mark.text then
             local text = string.upper(_mark.text)
             if not CONFIG.production_mode then
-                debugMsg("[MARKER] Found marker ID " .. markerId .. " with text: '" .. _mark.text .. "'")
+                -- debugMsg("[MARKER] Found marker ID " .. markerId .. " with text: '" .. _mark.text .. "'")
             end
 
             -- Check for "make" command markers
@@ -1339,6 +1314,91 @@ local function scanForMakeCommands()
         -- debugMsg("[INFO] No make command markers found during scan")
     elseif foundMakeCommands > 0 then
         debugMsg("[COMPLETE] Processed " .. foundMakeCommands .. " make command markers")
+    end
+end
+
+local function handleMarkChange(event)
+    if not event or not event.text or not event.pos then
+        return
+    end
+
+    local text = string.upper(event.text)
+
+    ----------------------------------------------------------------
+    -- MAKE commands
+    ----------------------------------------------------------------
+    if string.find(text, "^MAKE ") then
+        local vehicleTypeText = string.gsub(text, "^MAKE ", "")
+        local vehicleType = nil
+        local makeAll = false
+
+        if vehicleTypeText == "SUPPLYTRUCK" or vehicleTypeText == "SUPPLYTRUCKS" then
+            vehicleType = "SupplyTruck"
+        elseif vehicleTypeText == "TANK" or vehicleTypeText == "TANKS" then
+            vehicleType = "Tank"
+        elseif vehicleTypeText == "APC" or vehicleTypeText == "APCS" then
+            vehicleType = "APC"
+        elseif vehicleTypeText == "HUMVEE" or vehicleTypeText == "HUMVEES" then
+            vehicleType = "Humvee"
+        elseif vehicleTypeText == "MLRS" then
+            vehicleType = "MLRS"
+        elseif vehicleTypeText == "MBT" or vehicleTypeText == "MBTS" then
+            vehicleType = "MBT"
+        elseif vehicleTypeText == "FARP" or vehicleTypeText == "FARPS" then
+            vehicleType = "FARP"
+        elseif vehicleTypeText == "SRSAM" or vehicleTypeText == "SHORTRANGE" then
+            vehicleType = "SRSAM"
+        elseif vehicleTypeText == "LRSAM" or vehicleTypeText == "LONGRANGE" then
+            vehicleType = "LRSAM"
+        elseif vehicleTypeText == "ALL SUPPLYTRUCK" or vehicleTypeText == "ALL SUPPLYTRUCKS" then
+            vehicleType = "SupplyTruck"
+            makeAll = true
+        elseif vehicleTypeText == "ALL TANK" or vehicleTypeText == "ALL TANKS" then
+            vehicleType = "Tank"
+            makeAll = true
+        elseif vehicleTypeText == "ALL APC" or vehicleTypeText == "ALL APCS" then
+            vehicleType = "APC"
+            makeAll = true
+        elseif vehicleTypeText == "ALL HUMVEE" or vehicleTypeText == "ALL HUMVEES" then
+            vehicleType = "Humvee"
+            makeAll = true
+        elseif vehicleTypeText == "ALL MBT" or vehicleTypeText == "ALL MBTS" then
+            vehicleType = "MBT"
+            makeAll = true
+        elseif vehicleTypeText == "ALL MLRS" then
+            vehicleType = "MLRS"
+            makeAll = true
+        end
+
+        if vehicleType and CONFIG.cargo_types[vehicleType] then
+            debugMsg("[EXECUTE] Processing make command: " .. event.text ..
+                     " -> " .. vehicleType .. (makeAll and " [MAKE ALL]" or ""))
+            handleMakeCommand(event, vehicleType, makeAll)
+        else
+            debugMsg("[ERROR] Invalid or unrecognized vehicle type in make command: " ..
+                     tostring(vehicleTypeText))
+        end
+
+        return  -- done for this event
+    end
+
+    ----------------------------------------------------------------
+    -- SMOKE markers
+    ----------------------------------------------------------------
+    if string.match(text, "SMOKE$") then
+        debugMsg("[MARKER] Smoke marker detected: " .. event.text ..
+                 " at position: x=" .. event.pos.x .. ", z=" .. event.pos.z)
+
+        local colour = string.gsub(text, " SMOKE", "")
+
+        local markerPlayerName = event.author or event.playerName or "Unknown Player"
+        debugMsg("[SMOKE] Smoke requested by player: " .. markerPlayerName)
+
+        makeSmoke(colour, event.pos)
+        spendCMDPoints(markerPlayerName, 10)
+
+        trigger.action.removeMark(event.idx)
+        return
     end
 end
 
@@ -1649,7 +1709,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName, pl
                 ["modulation"] = 0,
                 ["tone"] = 0
             },
-            ["skill"] = "High",
+            ["skill"] = "Excellent",
             ["y"] = spawnZ + unitPos.z,
             ["x"] = spawnX + unitPos.x,
             ["name"] = groupName .. "_Unit_" .. i,
@@ -1802,7 +1862,7 @@ local function executeAircraftSpawn(dropMarker, vehicleType, qty, markerName, pl
                                             [1] = {
                                                 ["type"] = cargoConfig.type,  -- Use the vehicle type from config
                                                 ["unitId"] = math.random(10000, 99999),
-                                                ["skill"] = "Average",
+                                                ["skill"] = "Excellent",
                                                 ["y"] = vehicleDropZ,
                                                 ["x"] = vehicleDropX,
                                                 ["name"] = cargoUnitName,
@@ -2076,7 +2136,7 @@ airDropEventHandler.onEvent = function(self, event)
             debugMsg("Player entered unit: " .. playerName .. " (Group: " .. groupName .. ", ID: " .. groupID .. ")")
             
             if CONFIG.enable_npc_drops then
-                createPlayerSpecificMenu(groupID, playerName)
+                -- createPlayerSpecificMenu(groupID, playerName)
                 debugMsg("Radio menu created/updated for player: " .. playerName)
             end
         end
@@ -2098,6 +2158,12 @@ airDropEventHandler.onEvent = function(self, event)
     if event.id == world.event.S_EVENT_BIRTH then
         onEvent(event)
     end
+
+	-- Detect Marker Changes
+    if event.id == world.event.S_EVENT_MARK_CHANGE and event.text then
+        handleMarkChange(event)
+    end
+
 end
 
 -- =====================================================================================
@@ -2122,8 +2188,8 @@ local function createRadioMenu()
             function() debugSearchObjects("iso") end)
         missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: List All Markers", c130Menu, 
             function() outputAllMapMarkers() end)
-        missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Test Make Commands", c130Menu, 
-            function() scanForMakeCommands() end)
+        -- missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Test Make Commands", c130Menu, 
+            -- function() scanForMakeCommands() end)
 
         debugMsg("Debug radio menu created - Player menus will be created on spawn events")
     end
@@ -2163,7 +2229,7 @@ local function masterMonitor()
     
     -- Scan for make commands (only if enabled)
     if CONFIG.enable_make_command then
-        scanForMakeCommands()
+        -- scanForMakeCommands()
     end
     
     -- Note: Radio menu refresh removed - menus now created on birth events
@@ -2209,7 +2275,7 @@ local function initialize()
 
     AirDropState.initialized = true
 
-    debugMsg("Air Drop script loaded successfully!", true)
+    debugMsg("Air Drop script loaded successfully!", false)
     debugMsg("Event-based crate detection active - containers should be detected when spawned", false)
     debugMsg("Available vehicles: M1 Abrams Tanks, M113 APCs, M1025 HMMWVs", false)
 
