@@ -1,4 +1,4 @@
--- Air Drop 0.4 By Burning Skies MYTH
+-- Air Drop 0.5 By Burning Skies MYTH
 -- Pure DCS Lua
 -- Description: This script adds Air Drop radio commands that will spawn C-130's and deliver units to a designated
 --              map marker to drop cargo. You can also spawn and track the c130 supply containers dropped by players and use 
@@ -12,6 +12,7 @@
 
 local CONFIG = {
     debug = false,  -- Set to false to disable debug messages
+    use_test_crates = true,  -- Set to true to enable test crates detection on spawn already landed for easier testing
     production_mode = false,  -- Set to true to reduce overhead and debug output
 
     -- Enable features    enable_air_drops = true,  -- Set to false to disable all air drop functionality
@@ -42,7 +43,7 @@ local CONFIG = {
             type = "M-1 Abrams",
             mass = 60000,  -- Mass in kg for an M1 Abrams
             category = "vehicle",
-            materials_required = 6
+            materials_required = 4
         },
         ["APC"] = {
             name = "M1126 Stryker",
@@ -63,7 +64,7 @@ local CONFIG = {
             type = "M1A2C_SEP_V3",
             mass = 60000,  -- Mass in kg for an M1 Abrams
             category = "vehicle",
-            materials_required = 6
+            materials_required = 5
         },
         ["MLRS"] = {
             name = "M270 MLRS",
@@ -328,12 +329,28 @@ local function isPlayerCrateType(unitTypeName, unitName)
     if string.find(unitName, "^iso_container%-") or 
        string.find(unitName, "^iso_container_small%-") or
        string.find(unitName, "^cds_barrels%-") or
-       string.find(unitName, "^cds_crate%-") or
        string.find(unitName, "^container_cargo%-") then
         return true
     end
+    
+    -- Handle cds_crate containers with special logic for test crates
+    if string.find(unitName, "^cds_crate%-") then
+        -- Check if this is a test crate
+        if string.find(unitName, "^cds_crate%-test%-") then
+            -- Test crates are only allowed if use_test_crates is enabled
+            return CONFIG.use_test_crates
+        else
+            -- Regular cds_crate containers are always allowed
+            return true
+        end
+    end
 
-    debugMsg("Unit '" .. unitName .. "' of type '" .. unitTypeName .. "' does not match player crate type patterns.")
+    -- Check if this is a test crate and provide appropriate debug message
+    if string.find(unitName, "^cds_crate%-test%-") and not CONFIG.use_test_crates then
+        debugMsg("Test crate '" .. unitName .. "' ignored (use_test_crates is disabled)")
+    else
+        debugMsg("Unit '" .. unitName .. "' of type '" .. unitTypeName .. "' does not match player crate type patterns.")
+    end
     
     return false
 end
@@ -563,6 +580,81 @@ local function debugShowTrackedContainers()
     debugMsg("Total tracked containers: " .. trackedCount)
     debugMsg("========== END TRACKED CONTAINERS ==========")
     debugMsg("Currently tracking " .. trackedCount .. " containers. Check log for details.")
+end
+
+--- Scans for existing static containers at mission start (including test crates).
+-- @return void
+local function scanExistingContainers()
+    local foundContainers = 0
+    
+    -- Scan static objects from all coalitions
+    local coalitions = {coalition.side.BLUE, coalition.side.RED, coalition.side.NEUTRAL}
+    
+    for _, side in pairs(coalitions) do
+        local statics = coalition.getStaticObjects(side)
+        if statics then
+            for _, staticObj in pairs(statics) do
+                if staticObj and staticObj:isExist() then
+                    local objName = staticObj:getName()
+                    local objTypeName = staticObj:getTypeName()
+                    
+                    if objName and isPlayerCrateType(objTypeName, objName) and not AirDropState.playerCrates[objName] then
+                        local pos = staticObj:getPoint()
+                        local groundHeight = land.getHeight({x = pos.x, y = pos.z})
+                        local isOnGround = false
+                        local altitudeAGL = 0
+
+                        if groundHeight then
+                            altitudeAGL = pos.y - groundHeight
+                            isOnGround = math.abs(altitudeAGL) < 5
+                        else
+                            isOnGround = pos.y < 100
+                            altitudeAGL = pos.y
+                        end
+
+                        -- Determine container type
+                        local containerType = "standard"
+                        if string.find(objName, "^iso_container_small%-") then
+                            containerType = "small"
+                        end
+
+                        -- Check if this is a test crate that should be pre-configured as landed
+                        local isTestCrate = string.find(objName, "^cds_crate%-test%-") ~= nil
+                        local finalBeenAirborne = isTestCrate and true or (not isOnGround)
+                        local finalIsOnGround = isTestCrate and true or isOnGround
+
+                        -- Determine coalition name
+                        local coalitionName = "UNKNOWN"
+                        if side == coalition.side.BLUE then
+                            coalitionName = "BLUE"
+                        elseif side == coalition.side.RED then
+                            coalitionName = "RED"
+                        elseif side == coalition.side.NEUTRAL then
+                            coalitionName = "NEUTRAL"
+                        end
+
+                        AirDropState.playerCrates[objName] = {
+                            unit = staticObj,
+                            spawnTime = timer.getTime(),
+                            been_airborne = finalBeenAirborne,
+                            airborne = not finalIsOnGround,
+                            typeName = objTypeName,
+                            isStatic = true,
+                            containerType = containerType,
+                            coalition = coalitionName,
+                            lastPosition = pos,
+                            isOnGround = finalIsOnGround
+                        }
+                        
+                        foundContainers = foundContainers + 1
+                        debugMsg("✓ Static container found at initialization: " .. objName .. " (type: " .. objTypeName .. ")")
+                    end
+                end
+            end
+        end
+    end
+    
+    debugMsg("Static container scan complete. Found " .. foundContainers .. " containers.")
 end
 
 --- Monitors status of already-tracked containers (airborne/landed state changes).
@@ -2246,7 +2338,7 @@ end
 -- Initialize the script
 local function initialize()
     debugMsg("========================================")
-    debugMsg("Air Drop Script v0.2 Initializing...")
+    debugMsg("Air Drop Script v0.5 Initializing...")
     debugMsg("========================================")
 
     -- Create radio menu after a short delay
@@ -2255,6 +2347,12 @@ local function initialize()
     -- Register event handler for birth events and unit spawning
     world.addEventHandler(airDropEventHandler)
     debugMsg("Event handler registered for birth events and crate spawn detection")
+
+    -- Scan for existing static containers once on initialization (including test crates)
+    if CONFIG.use_test_crates == true then
+        scanExistingContainers()
+        debugMsg("Initial container scan completed")
+    end
 
     -- Start the consolidated monitoring system
     timer.scheduleFunction(masterMonitor, {}, timer.getTime() + CONFIG.scan_frequency)
@@ -2276,8 +2374,8 @@ local function initialize()
     AirDropState.initialized = true
 
     debugMsg("Air Drop script loaded successfully!", false)
-    debugMsg("Event-based crate detection active - containers should be detected when spawned", false)
-    debugMsg("Available vehicles: M1 Abrams Tanks, M113 APCs, M1025 HMMWVs", false)
+    debugMsg("Event-based + static container detection active", false)
+    debugMsg("Available vehicles: M1 Abrams Tanks, M1126 Strykers, M1025 HMMWVs", false)
 
     if CONFIG.production_mode then
         debugMsg("Running in PRODUCTION MODE - reduced debug output", true)
