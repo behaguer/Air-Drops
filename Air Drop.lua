@@ -482,7 +482,7 @@ local function debugShowAllObjects()
                     local staticTypeName = static:getTypeName()
                     debugMsg("  STATIC: " .. staticName .. " (type: " .. staticTypeName .. ")")
                     if isPlayerCrateType(staticTypeName, staticName) then
-                        debugMsg("    *** FOUND C-130J CONTAINER!! ***")
+                        debugMsg("    *** FOUND CONTAINER!! ***")
                         potentialContainers = potentialContainers + 1
                     end
                     totalObjects = totalObjects + 1
@@ -1270,6 +1270,10 @@ local function getMapMarker(markerName)
     return nil
 end
 
+--- Creates a smoke signal at the specified marker position with the given colour.
+--- Supported colours: green, red, white, orange, blue (case-insensitive). Defaults to blue if invalid.
+-- @param colour The colour of the smoke (string)
+-- @param markerPos The position of the marker (table with x, y, z)
 local function makeSmoke(colour, markerPos)
     local smokeTypes = {
         green = 0,
