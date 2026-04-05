@@ -44,10 +44,11 @@ Alternatively:
 - Spawn cargo containers using the C-130J mod (or any static object with the correct name pattern) 
 - Fly and drop them from the C-130J
 - Use map markers to spawn vehicles from nearby landed crates:
-  - `make tank` - M1 Abrams Tank (6 materials required)
+  - `make supplytruck` - Truck M818 (1 material required)
+  - `make tank` - M1 Abrams Tank (4 materials required)
   - `make apc` - M1126 Stryker ICV (2 materials required)  
   - `make humvee` - M1025 HMMWV (2 materials required)
-  - `make mbt` - M1A2C SEP V3 (6 materials required)
+  - `make mbt` - M1A2C SEP V3 (5 materials required)
   - `make mlrs` - M270 MLRS (3 materials required)
   - `make srsam` - Short Range SAM (5 materials required)
   - `make lrsam` - Long Range SAM (5 materials required)
@@ -65,13 +66,15 @@ Alternatively:
 - 8 units (4 C-130s): 80 CMD points
 
 ### Manufacturing Requirements
-- Supply Truck: 1 material
-- Tank/MBT: 6 materials  
-- APC: 2 materials
-- Humvee: 2 materials
-- MLRS: 3 materials
-- SAM Systems: 5 materials
-- FARP: 4 container_cargo OR 7 uh1h_cargo materials
+- **Supply Truck (M818)**: 1 material
+- **Tank (M1 Abrams)**: 4 materials
+- **APC (M1126 Stryker ICV)**: 2 materials
+- **Humvee (M1025 HMMWV)**: 2 materials
+- **MBT (M1A2C SEP V3)**: 5 materials
+- **MLRS (M270)**: 3 materials
+- **Short Range SAM**: 5 materials
+- **Long Range SAM**: 5 materials
+- **FARP**: 4 container_cargo OR 7 uh1h_cargo materials
 
 Container detection includes both dynamic containers (dropped from aircraft) and static containers (pre-placed in mission).
 

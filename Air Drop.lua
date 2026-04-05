@@ -15,7 +15,7 @@ local CONFIG = {
     use_test_crates = true,  -- Set to true to enable test crates detection on spawn already landed for easier testing
     production_mode = false,  -- Set to true to reduce overhead and debug output
 
-    -- Enable features    enable_air_drops = true,  -- Set to false to disable all air drop functionality
+    -- Enable features
     enable_make_command = true,  -- Set to false to disable the "make" command
     enable_npc_drops = true,  -- Set to false to disable NPC air drops (only player drops will work)
 
@@ -1296,119 +1296,6 @@ local function makeSmoke(colour, markerPos)
     debugMsg("[SMOKE] Deployed " .. (smokeTypes[string.lower(colour)] and colour or "blue (default)") .. " smoke at x=" .. math.floor(smokePosition.x) .. ", z=" .. math.floor(smokePosition.z))
 end
 
---- Scans for and processes make command markers on the map.
--- @return void
-local function scanForMakeCommands()
-
-    local markers = world.getMarkPanels()
-    if not markers then
-        if not CONFIG.production_mode then
-            debugMsg("[ERROR] No markers found on map")
-        end
-        return
-    end
-
-    local foundMakeCommands = 0
-
-    for markerId, _mark in pairs(markers) do
-        if _mark and _mark.text then
-            local text = string.upper(_mark.text)
-            if not CONFIG.production_mode then
-                -- debugMsg("[MARKER] Found marker ID " .. markerId .. " with text: '" .. _mark.text .. "'")
-            end
-
-            -- Check for "make" command markers
-            if string.find(text, "^MAKE ") then
-                foundMakeCommands = foundMakeCommands + 1
-                debugMsg("[MAKE] MAKE COMMAND DETECTED: " .. _mark.text)
-
-                local vehicleTypeText = string.gsub(text, "^MAKE ", "")
-                local vehicleType = nil
-
-                if not CONFIG.production_mode then
-                    debugMsg("[PARSE] Parsing vehicle type: '" .. vehicleTypeText .. "'")
-                end
-
-                -- Map marker text to CONFIG cargo types
-                local makeAll = false
-                if vehicleTypeText == "SUPPLYTRUCK" or vehicleTypeText == "SUPPLYTRUCKS" then
-                    vehicleType = "SupplyTruck"
-                elseif vehicleTypeText == "TANK" or vehicleTypeText == "TANKS" then
-                    vehicleType = "Tank"
-                elseif vehicleTypeText == "APC" or vehicleTypeText == "APCS" then
-                    vehicleType = "APC"
-                elseif vehicleTypeText == "HUMVEE" or vehicleTypeText == "HUMVEES" then
-                    vehicleType = "Humvee"
-                elseif vehicleTypeText == "MLRS" then
-                    vehicleType = "MLRS"
-                elseif vehicleTypeText == "MBT" or vehicleTypeText == "MBTS" then
-                    vehicleType = "MBT"
-                elseif vehicleTypeText == "FARP" or vehicleTypeText == "FARPS" then
-                    vehicleType = "FARP"
-                elseif vehicleTypeText == "SRSAM" or vehicleTypeText == "SHORTRANGE" then
-                    vehicleType = "SRSAM"
-                elseif vehicleTypeText == "LRSAM" or vehicleTypeText == "LONGRANGE" then
-                    vehicleType = "LRSAM"
-                elseif vehicleTypeText == "ALL SUPPLYTRUCK" or vehicleTypeText == "ALL SUPPLYTRUCKS" then
-                    vehicleType = "SupplyTruck"
-                    makeAll = true 
-                elseif vehicleTypeText == "ALL TANK" or vehicleTypeText == "ALL TANKS" then
-                    vehicleType = "Tank"
-                    makeAll = true
-                elseif vehicleTypeText == "ALL APC" or vehicleTypeText == "ALL APCS" then
-                    vehicleType = "APC"
-                    makeAll = true
-                elseif vehicleTypeText == "ALL HUMVEE" or vehicleTypeText == "ALL HUMVEES" then
-                    vehicleType = "Humvee"
-                    makeAll = true
-                elseif vehicleTypeText == "ALL MBT" or vehicleTypeText == "ALL MBTS" then
-                    vehicleType = "MBT"
-                    makeAll = true
-                elseif vehicleTypeText == "ALL MLRS" then
-                    vehicleType = "MLRS"
-                    makeAll = true
-                end
-
-                if vehicleType and CONFIG.cargo_types[vehicleType] then
-                    debugMsg("[EXECUTE] Processing make command: " .. _mark.text .. " -> " .. vehicleType .. (makeAll and " [MAKE ALL]" or ""))
-                    handleMakeCommand(_mark, vehicleType, makeAll)
-                else
-                    debugMsg("[ERROR] Invalid or unrecognized vehicle type in make command: " .. tostring(vehicleTypeText))
-                end
-            end
-
-            if string.match(text, "SMOKE$") then
-                debugMsg("[MARKER] Smoke marker detected: " .. _mark.text .. " at position: x=" .. _mark.pos.x .. ", z=" .. _mark.pos.z)
-                local colour = string.gsub(text, " SMOKE", "")
-                
-                -- Get the player name who created the marker
-                local markerPlayerName = nil
-                if _mark.author then
-                    markerPlayerName = _mark.author
-                elseif _mark.playerName then
-                    markerPlayerName = _mark.playerName
-                else
-                    markerPlayerName = "Unknown Player"
-                end
-                
-                debugMsg("[SMOKE] Smoke requested by player: " .. markerPlayerName)
-                makeSmoke(colour, _mark.pos)
-                spendCMDPoints(markerPlayerName, 10)  -- Cost for smoke deployment
-                
-                -- Remove the smoke marker after processing
-                trigger.action.removeMark(_mark.idx)
-            end
-
-        end
-    end
-
-    if foundMakeCommands == 0 and not CONFIG.production_mode then
-        -- debugMsg("[INFO] No make command markers found during scan")
-    elseif foundMakeCommands > 0 then
-        debugMsg("[COMPLETE] Processed " .. foundMakeCommands .. " make command markers")
-    end
-end
-
 local function handleMarkChange(event)
     if not event or not event.text or not event.pos then
         return
@@ -1420,6 +1307,12 @@ local function handleMarkChange(event)
     -- MAKE commands
     ----------------------------------------------------------------
     if string.find(text, "^MAKE ") then
+        -- Check if make command is enabled
+        if not CONFIG.enable_make_command then
+            debugMsg("Airdrop 'Make' command is disabled in CONFIG")
+            return
+        end
+
         local vehicleTypeText = string.gsub(text, "^MAKE ", "")
         local vehicleType = nil
         local makeAll = false
@@ -2117,17 +2010,14 @@ end
 -- @param playerName Name of the player for the menu
 -- @return void
 local function createPlayerSpecificMenu(groupID, playerName)
-    if not CONFIG.enable_npc_drops then
-        return
-    end
-    
+
     -- Remove existing menu if it exists (like JTAC does)
     if airDropMenus[groupID] then
         missionCommands.removeItemForGroup(groupID, airDropMenus[groupID])
     end
-    
+
     debugMsg("Creating radio menu for group ID: " .. groupID)
-    
+
     -- Create main menu for this specific player group
     local mainMenu = missionCommands.addSubMenuForGroup(groupID, "Call Air Drop")
 
@@ -2228,7 +2118,7 @@ airDropEventHandler.onEvent = function(self, event)
             debugMsg("Player entered unit: " .. playerName .. " (Group: " .. groupName .. ", ID: " .. groupID .. ")")
             
             if CONFIG.enable_npc_drops then
-                -- createPlayerSpecificMenu(groupID, playerName)
+                createPlayerSpecificMenu(groupID, playerName)
                 debugMsg("Radio menu created/updated for player: " .. playerName)
             end
         end
@@ -2267,7 +2157,7 @@ local function createRadioMenu()
     -- Add debug commands to the main menu for troubleshooting
     if CONFIG.debug == true then
         debugMsg("Adding debug commands to radio menu")
-        local c130Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "C130j Air Drop")
+        local c130Menu = missionCommands.addSubMenuForCoalition(coalition.side.BLUE, "Air Drop Debug")
         missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Show All Objects", c130Menu, 
             function() debugShowAllObjects() end)
         missionCommands.addCommandForCoalition(coalition.side.BLUE, "DEBUG: Show Tracked Containers", c130Menu, 
@@ -2318,14 +2208,7 @@ local function masterMonitor()
             end
         end
     end
-    
-    -- Scan for make commands (only if enabled)
-    if CONFIG.enable_make_command then
-        -- scanForMakeCommands()
-    end
-    
-    -- Note: Radio menu refresh removed - menus now created on birth events
-    
+
     -- Continue monitoring
     return timer.getTime() + CONFIG.scan_frequency
 end
@@ -2346,7 +2229,6 @@ local function initialize()
 
     -- Register event handler for birth events and unit spawning
     world.addEventHandler(airDropEventHandler)
-    debugMsg("Event handler registered for birth events and crate spawn detection")
 
     -- Scan for existing static containers once on initialization (including test crates)
     if CONFIG.use_test_crates == true then
@@ -2356,14 +2238,12 @@ local function initialize()
 
     -- Start the consolidated monitoring system
     timer.scheduleFunction(masterMonitor, {}, timer.getTime() + CONFIG.scan_frequency)
-    debugMsg("Master monitoring system started - checking every " .. CONFIG.scan_frequency .. " seconds")
 
     -- Start consolidated crate scanning and monitoring
     timer.scheduleFunction(function()
         scanAndMonitorPlayerCrates()
         return timer.getTime() + CONFIG.monitor_frequency
     end, {}, timer.getTime() + CONFIG.monitor_frequency)
-    debugMsg("Consolidated crate monitoring started - checking every " .. CONFIG.monitor_frequency .. " seconds")
 
     -- Schedule periodic cleanup of old groups
     timer.scheduleFunction(function()
@@ -2375,13 +2255,12 @@ local function initialize()
 
     debugMsg("Air Drop script loaded successfully!", false)
     debugMsg("Event-based + static container detection active", false)
-    debugMsg("Available vehicles: M1 Abrams Tanks, M1126 Strykers, M1025 HMMWVs", false)
 
     if CONFIG.production_mode then
         debugMsg("Running in PRODUCTION MODE - reduced debug output", true)
     end
 
-    debugMsg("Scan frequency: " .. CONFIG.scan_frequency .. "s, Monitor frequency: " .. CONFIG.monitor_frequency .. "s", false)
+    debugMsg("Container Scan frequency: " .. CONFIG.scan_frequency .. "s, Monitor frequency: " .. CONFIG.monitor_frequency .. "s", false)
 
 end
 
