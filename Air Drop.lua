@@ -1284,7 +1284,7 @@ local function makeSmoke(colour, markerPos)
     }
     
     local smokeTypeId = smokeTypes[string.lower(colour)]
-    if not smokeTypeId then
+    if smokeTypeId == nil then
         debugMsg("[WARN] Invalid smoke colour '" .. tostring(colour) .. "', defaulting to blue")
         smokeTypeId = 4  -- Default to blue
     end
@@ -1297,14 +1297,16 @@ local function makeSmoke(colour, markerPos)
     }
 
     trigger.action.smoke(smokePosition, smokeTypeId)
-    debugMsg("[SMOKE] Deployed " .. (smokeTypes[string.lower(colour)] and colour or "blue (default)") .. " smoke at x=" .. math.floor(smokePosition.x) .. ", z=" .. math.floor(smokePosition.z))
+    debugMsg("[SMOKE] Deployed " .. (smokeTypes[string.lower(colour)] ~= nil and colour or "blue (default)") .. " smoke at x=" .. math.floor(smokePosition.x) .. ", z=" .. math.floor(smokePosition.z))
 end
 
 local function handleMarkChange(event)
     if not event or not event.text or not event.pos then
+        debugMsg("[EVENT] handleMarkChange called but event data is missing")
         return
     end
 
+    debugMsg("[EVENT] handleMarkChange called with text: '" .. event.text .. "'")
     local text = string.upper(event.text)
 
     ----------------------------------------------------------------
@@ -1374,11 +1376,18 @@ local function handleMarkChange(event)
     ----------------------------------------------------------------
     -- SMOKE markers
     ----------------------------------------------------------------
-    if string.match(text, "SMOKE$") then
+    if string.match(text, "^SMOKE ") or string.match(text, "SMOKE$") then
         debugMsg("[MARKER] Smoke marker detected: " .. event.text ..
                  " at position: x=" .. event.pos.x .. ", z=" .. event.pos.z)
 
-        local colour = string.gsub(text, " SMOKE", "")
+        local colour
+        if string.match(text, "^SMOKE ") then
+            -- Handle "SMOKE COLOR" format
+            colour = string.gsub(text, "SMOKE ", "")
+        else
+            -- Handle "COLOR SMOKE" format
+            colour = string.gsub(text, " SMOKE", "")
+        end
 
         local markerPlayerName = event.author or event.playerName or "Unknown Player"
         debugMsg("[SMOKE] Smoke requested by player: " .. markerPlayerName)
@@ -2145,8 +2154,9 @@ airDropEventHandler.onEvent = function(self, event)
         onEvent(event)
     end
 
-	-- Detect Marker Changes
-    if event.id == world.event.S_EVENT_MARK_CHANGE and event.text then
+	-- Detect Marker Changes and Additions
+    if (event.id == world.event.S_EVENT_MARK_CHANGE or event.id == world.event.S_EVENT_MARK_ADDED) and event.text then
+        debugMsg("[EVENT] Marker event detected: " .. (event.id == world.event.S_EVENT_MARK_CHANGE and "CHANGE" or "ADDED") .. " - Text: '" .. event.text .. "'")
         handleMarkChange(event)
     end
 
