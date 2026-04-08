@@ -87,6 +87,15 @@ local CONFIG = {
             category = "SAM_UNITS",
             materials_required = 5
         },
+        ["PATRIOT"] = {
+            name = "Patriot SAM System",
+            type = "SAM_UNITS",
+            mass = 35000,  -- Mass in kg for Patriot SAM System
+            category = "SAM_UNITS",
+            materials_required = {
+                cds_crate = 5
+            }
+        },
         ["FARP"] = {
             name = "Forward Arming and Refueling Point",
             type = "FARP",
@@ -125,6 +134,21 @@ local CONFIG = {
                 { type = "Hawk pcp", skill = "High" },
                 { type = "Hawk sr", skill = "High" },
                 { type = "Hawk tr", skill = "High" },
+            },
+        },
+        PATRIOT = {
+            [country.id.CJTF_BLUE] = {
+                { type = "Patriot str", skill = "High" },
+                { type = "Patriot EPP", skill = "High" },
+                { type = "Patriot ECS", skill = "High" },
+                { type = "Patriot AMG", skill = "High" },
+                { type = "Patriot cp", skill = "High" },
+                { type = "Patriot ln", skill = "High" },
+                { type = "Patriot ln", skill = "High" },
+                { type = "Patriot ln", skill = "High" },
+                { type = "Patriot ln", skill = "High" },
+                { type = "M 818", skill = "High" },
+                { type = "Hummer", skill = "High" },
             },
         },
     },
@@ -745,8 +769,9 @@ end
 -- @param groupBaseName (string) Base name for the SAM group
 -- @param markerX (number) X coordinate for spawn location
 -- @param markerZ (number) Z coordinate for spawn location
+-- @param customHeading (number, optional) Custom heading in degrees for radar direction
 -- @return void
-local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ)
+local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ, customHeading)
     debugMsg("[SAM] ================ SAM GROUP SPAWNING =================")
     debugMsg("[SAM] SAM Type: " .. tostring(samType))
     debugMsg("[SAM] Group Base Name: " .. tostring(groupBaseName))
@@ -809,14 +834,29 @@ local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ)
         ["start_time"] = 0,
     }
 
-    -- Add units with randomized positioning
+    -- Add units with positioning logic
     local unitSpacing = CONFIG.SAM_DEPLOYMENT.UNIT_SPACING or 30
     local maxRandomOffset = CONFIG.SAM_DEPLOYMENT.MAX_RANDOM_OFFSET or 15
     local enableRandomHeading = CONFIG.SAM_DEPLOYMENT.ENABLE_RANDOM_HEADING
     local enableRandomization = CONFIG.SAM_DEPLOYMENT.ENABLE_POSITION_RANDOMIZATION
     
+    -- Count launcher units for cone formation if PATRIOT with custom heading
+    local launcherCount = 0
+    local launcherIndex = 0
+    local isPatriotWithHeading = (samType == "PATRIOT" and customHeading ~= nil)
+    
+    if isPatriotWithHeading then
+        for _, unit in ipairs(samUnits) do
+            if string.find(unit.type, "Patriot ln") then
+                launcherCount = launcherCount + 1
+            end
+        end
+        debugMsg("[PATRIOT] Found " .. launcherCount .. " launchers for cone formation facing " .. customHeading .. "°")
+    end
+    
     for i, samUnit in ipairs(samUnits) do
         local unitX, unitZ
+        local isLauncher = string.find(samUnit.type, "Patriot ln")
         
         if i == 1 then
             -- First unit near center with optional randomization
@@ -827,9 +867,29 @@ local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ)
                 unitX = markerX
                 unitZ = markerZ
             end
+        elseif isPatriotWithHeading and isLauncher then
+            -- Position PATRIOT launchers in cone formation facing radar direction
+            launcherIndex = launcherIndex + 1
+            
+            -- Convert custom heading to radians (DCS uses degrees but math functions use radians)
+            local radarHeadingRad = math.rad(customHeading)
+            
+            -- Create cone covering 240 degrees (-120° to +120° from radar direction)
+            local coneWidth = math.rad(240)  -- 240 degrees total cone
+            local startAngle = radarHeadingRad - (coneWidth / 2)  -- Start at -120° from radar
+            local angleStep = coneWidth / (launcherCount - 1)     -- Distribute launchers evenly
+            
+            local launcherAngle = startAngle + ((launcherIndex - 1) * angleStep)
+            local launcherRadius = unitSpacing + (math.random() * 10)  -- Slight radius variation
+            
+            unitX = markerX + (launcherRadius * math.cos(launcherAngle))
+            unitZ = markerZ + (launcherRadius * math.sin(launcherAngle))
+            
+            debugMsg("[PATRIOT] Launcher " .. launcherIndex .. "/" .. launcherCount .. " at angle " .. math.floor(math.deg(launcherAngle)) .. "° (radius: " .. math.floor(launcherRadius) .. "m)")
         else
-            -- Distribute remaining units in a circle with optional randomization
-            local angle = (i - 2) * (2 * math.pi / (#samUnits - 1))
+            -- Normal circular positioning for non-launcher units or non-PATRIOT systems
+            local remainingUnits = #samUnits - 1
+            local angle = (i - 2) * (2 * math.pi / remainingUnits)
             local radius = unitSpacing
             
             -- Add randomization to angle and radius if enabled
@@ -846,7 +906,33 @@ local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ)
         
         -- Create unit data
         local unitName = groupName .. "_" .. (samUnit.type:gsub("%s+", "_")) .. "_" .. i
-        local unitHeading = enableRandomHeading and math.random(0, 359) or 0
+        local unitHeading
+        
+        if customHeading then
+            if string.find(samUnit.type, "str") or string.find(samUnit.type, "Radar") then
+                -- Radar units face the custom direction directly (no correction)
+                unitHeading = math.rad(customHeading)
+                debugMsg("[SAM] Radar " .. samUnit.type .. " - facing: " .. customHeading .. "° (direct heading)")
+            elseif isPatriotWithHeading and isLauncher then
+                -- PATRIOT launchers face their assigned sector within the cone
+                local radarHeadingRad = math.rad(customHeading)  -- Use direct heading, no correction
+                local coneWidth = math.rad(240)
+                local startAngle = radarHeadingRad - (coneWidth / 2)
+                local angleStep = coneWidth / (launcherCount - 1)
+                local launcherDirection = startAngle + ((launcherIndex - 1) * angleStep)
+                
+                unitHeading = launcherDirection % (2 * math.pi)  -- Keep in radians, normalize to 0-2π
+                debugMsg("[PATRIOT] Launcher " .. launcherIndex .. " facing " .. math.floor(math.deg(unitHeading)) .. "° (sector coverage)")
+            else
+                -- Other units use random or default heading (convert to radians if needed)
+                local degrees = enableRandomHeading and math.random(0, 359) or 0
+                unitHeading = math.rad(degrees)
+            end
+        else
+            -- Default case: random or zero heading (convert to radians)
+            local degrees = enableRandomHeading and math.random(0, 359) or 0
+            unitHeading = math.rad(degrees)
+        end
         
         local unitData = {
             ["type"] = samUnit.type,
@@ -1144,7 +1230,21 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 
         elseif cargoConfig.category == "SAM_UNITS" then
             -- Spawn SAM group with multiple units and randomized positioning
-            spawnSuccess = spawnSAMGroup(vehicleType, itemName, unitPosX, unitPosZ)
+            -- Check if marker text contains direction code for PATRIOT
+            local customHeading = nil
+            if vehicleType == "PATRIOT" and marker.text then
+                local directionCode = string.match(marker.text, "(%d%d%d)$")
+                if directionCode then
+                    customHeading = tonumber(directionCode)
+                    if customHeading and customHeading >= 0 and customHeading <= 359 then
+                        debugMsg("[PATRIOT] Using custom radar direction: " .. customHeading .. " degrees")
+                    else
+                        debugMsg("[PATRIOT] Invalid direction code: " .. directionCode .. ", using default")
+                        customHeading = nil
+                    end
+                end
+            end
+            spawnSuccess = spawnSAMGroup(vehicleType, itemName, unitPosX, unitPosZ, customHeading)
             spawnResult = "SAM group spawned"
         else
             -- Spawn vehicle group
@@ -1341,6 +1441,12 @@ local function handleMarkChange(event)
             vehicleType = "SRSAM"
         elseif vehicleTypeText == "LRSAM" or vehicleTypeText == "LONGRANGE" then
             vehicleType = "LRSAM"
+        elseif vehicleTypeText == "PATRIOT" or vehicleTypeText == "PATRIOTS" then
+            vehicleType = "PATRIOT"
+        -- Handle PATRIOT with direction codes (e.g., "PATRIOT 090")
+        elseif string.match(vehicleTypeText, "^PATRIOT %d%d%d$") or string.match(vehicleTypeText, "^PATRIOTS %d%d%d$") then
+            vehicleType = "PATRIOT"
+            debugMsg("[DIRECTION] Detected PATRIOT with direction code: '" .. vehicleTypeText .. "'")
         elseif vehicleTypeText == "ALL SUPPLYTRUCK" or vehicleTypeText == "ALL SUPPLYTRUCKS" then
             vehicleType = "SupplyTruck"
             makeAll = true
