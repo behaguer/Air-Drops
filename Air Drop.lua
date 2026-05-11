@@ -379,6 +379,63 @@ local function isPlayerCrateType(unitTypeName, unitName)
     return false
 end
 
+--- Removes a tracked crate using multiple lookup paths for MP reliability.
+-- Some cargo objects resolve differently (Unit vs StaticObject) on dedicated servers.
+-- @param crateName The tracked crate name
+-- @param crateData The tracked crate data table
+-- @return boolean True if destruction command succeeded
+local function removeTrackedCrate(crateName, crateData)
+    local function tryDestroyObject(obj, source)
+        if not obj or not obj.isExist or not obj.destroy then
+            return false
+        end
+
+        local existsOk, exists = pcall(function()
+            return obj:isExist()
+        end)
+        if not existsOk or not exists then
+            return false
+        end
+
+        local destroyOk, destroyErr = pcall(function()
+            obj:destroy()
+        end)
+
+        if destroyOk then
+            debugMsg("[CLEANUP] Crate removal succeeded via " .. source .. ": " .. tostring(crateName))
+            return true
+        end
+
+        debugMsg("[CLEANUP] Crate removal failed via " .. source .. " for " .. tostring(crateName) .. ": " .. tostring(destroyErr))
+        return false
+    end
+
+    if crateData and tryDestroyObject(crateData.unit, "tracked object") then
+        return true
+    end
+
+    if Unit and Unit.getByName and tryDestroyObject(Unit.getByName(crateName), "Unit.getByName") then
+        return true
+    end
+
+    if StaticObject and StaticObject.getByName and tryDestroyObject(StaticObject.getByName(crateName), "StaticObject.getByName") then
+        return true
+    end
+
+    if trigger and trigger.action and trigger.action.removeStaticObject then
+        local removeOk, removeErr = pcall(function()
+            trigger.action.removeStaticObject(crateName)
+        end)
+        if removeOk then
+            debugMsg("[CLEANUP] Crate removal succeeded via trigger.action.removeStaticObject: " .. tostring(crateName))
+            return true
+        end
+        debugMsg("[CLEANUP] trigger.action.removeStaticObject failed for " .. tostring(crateName) .. ": " .. tostring(removeErr))
+    end
+
+    return false
+end
+
 --- Processes DCS world events for crate tracking and player detection.
 -- @param event DCS event data containing id, initiator, target, etc.
 -- @return void
@@ -1324,14 +1381,17 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
         local despawnedCount = 0
         debugMsg("[CLEANUP] Processing " .. cratesToUse .. " selected crates for despawn...")
         for i, crateInfo in ipairs(selectedCrates) do
-            if crateInfo.data.unit and crateInfo.data.unit:isExist() then
+            if crateInfo.data and crateInfo.name then
                 debugMsg("[CLEANUP] Despawning material crate " .. i .. ": " .. crateInfo.name)
-                crateInfo.data.unit:destroy()
-                AirDropState.playerCrates[crateInfo.name] = nil
-                despawnedCount = despawnedCount + 1
-                debugMsg("[SUCCESS] Despawned material crate: " .. crateInfo.name)
+                if removeTrackedCrate(crateInfo.name, crateInfo.data) then
+                    AirDropState.playerCrates[crateInfo.name] = nil
+                    despawnedCount = despawnedCount + 1
+                    debugMsg("[SUCCESS] Despawned material crate: " .. crateInfo.name)
+                else
+                    debugMsg("[ERROR] Could not despawn crate (all methods failed): " .. crateInfo.name)
+                end
             else
-                debugMsg("[ERROR] Could not despawn crate: " .. crateInfo.name .. " (does not exist)")
+                debugMsg("[ERROR] Could not despawn crate: invalid crate data in selectedCrates")
             end
         end
 
