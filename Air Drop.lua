@@ -413,73 +413,100 @@ local function removeTrackedCrate(crateName, crateData)
         return false, nil
     end
 
-    local initiallyExists = crateStillExistsByName()
-    if not initiallyExists and (not crateData or not crateData.unit) then
-        debugMsg("[CLEANUP] Crate already absent by name lookup: " .. tostring(crateName))
-        return true
-    end
-
-    local function tryDestroyObject(obj, source)
-        if not obj or not obj.isExist or not obj.destroy then
-            return false
+    local function runRemovalPass(targetData)
+        local initiallyExists = crateStillExistsByName()
+        if not initiallyExists and (not targetData or not targetData.unit) then
+            debugMsg("[CLEANUP] Crate already absent by name lookup: " .. tostring(crateName))
+            return true
         end
 
-        local existsOk, exists = pcall(function()
-            return obj:isExist()
-        end)
-        if not existsOk or not exists then
-            return false
-        end
-
-        local destroyOk, destroyErr = pcall(function()
-            obj:destroy()
-        end)
-
-        if not destroyOk then
-            debugMsg("[CLEANUP] Crate removal failed via " .. source .. " for " .. tostring(crateName) .. ": " .. tostring(destroyErr))
-            return false
-        end
-
-        local stillExists, existsSource = crateStillExistsByName()
-        if stillExists then
-            debugMsg("[CLEANUP] Destroy called via " .. source .. " but crate still exists via " .. tostring(existsSource) .. ": " .. tostring(crateName))
-            return false
-        end
-
-        debugMsg("[CLEANUP] Crate removal succeeded via " .. source .. ": " .. tostring(crateName))
-        return true
-    end
-
-    if crateData and tryDestroyObject(crateData.unit, "tracked object") then
-        return true
-    end
-
-    if Unit and Unit.getByName and tryDestroyObject(Unit.getByName(crateName), "Unit.getByName") then
-        return true
-    end
-
-    if StaticObject and StaticObject.getByName and tryDestroyObject(StaticObject.getByName(crateName), "StaticObject.getByName") then
-        return true
-    end
-
-    if trigger and trigger.action and trigger.action.removeStaticObject then
-        local removeOk, removeErr = pcall(function()
-            trigger.action.removeStaticObject(crateName)
-        end)
-        if removeOk then
-            local stillExists, existsSource = crateStillExistsByName()
-            if not stillExists then
-                debugMsg("[CLEANUP] Crate removal succeeded via trigger.action.removeStaticObject: " .. tostring(crateName))
-                return true
+        local function tryDestroyObject(obj, source)
+            if not obj or not obj.isExist or not obj.destroy then
+                return false
             end
-            debugMsg("[CLEANUP] removeStaticObject called but crate still exists via " .. tostring(existsSource) .. ": " .. tostring(crateName))
+
+            local existsOk, exists = pcall(function()
+                return obj:isExist()
+            end)
+            if not existsOk or not exists then
+                return false
+            end
+
+            local destroyOk, destroyErr = pcall(function()
+                obj:destroy()
+            end)
+
+            if not destroyOk then
+                debugMsg("[CLEANUP] Crate removal failed via " .. source .. " for " .. tostring(crateName) .. ": " .. tostring(destroyErr))
+                return false
+            end
+
+            local stillExists, existsSource = crateStillExistsByName()
+            if stillExists then
+                debugMsg("[CLEANUP] Destroy called via " .. source .. " but crate still exists via " .. tostring(existsSource) .. ": " .. tostring(crateName))
+                return false
+            end
+
+            debugMsg("[CLEANUP] Crate removal succeeded via " .. source .. ": " .. tostring(crateName))
+            return true
         end
-        if not removeOk then
-            debugMsg("[CLEANUP] trigger.action.removeStaticObject failed for " .. tostring(crateName) .. ": " .. tostring(removeErr))
+
+        if targetData and tryDestroyObject(targetData.unit, "tracked object") then
+            return true
         end
+
+        if Unit and Unit.getByName and tryDestroyObject(Unit.getByName(crateName), "Unit.getByName") then
+            return true
+        end
+
+        if StaticObject and StaticObject.getByName and tryDestroyObject(StaticObject.getByName(crateName), "StaticObject.getByName") then
+            return true
+        end
+
+        if trigger and trigger.action and trigger.action.removeStaticObject then
+            local removeOk, removeErr = pcall(function()
+                trigger.action.removeStaticObject(crateName)
+            end)
+            if removeOk then
+                local stillExists, existsSource = crateStillExistsByName()
+                if not stillExists then
+                    debugMsg("[CLEANUP] Crate removal succeeded via trigger.action.removeStaticObject: " .. tostring(crateName))
+                    return true
+                end
+                debugMsg("[CLEANUP] removeStaticObject called but crate still exists via " .. tostring(existsSource) .. ": " .. tostring(crateName))
+            end
+            if not removeOk then
+                debugMsg("[CLEANUP] trigger.action.removeStaticObject failed for " .. tostring(crateName) .. ": " .. tostring(removeErr))
+            end
+        end
+
+        return false
     end
 
-    return false
+    local removedNow = runRemovalPass(crateData)
+
+    timer.scheduleFunction(function(args)
+        local stillExists, existsSource = crateStillExistsByName()
+        if not stillExists then
+            if AirDropState.playerCrates[args.crateName] then
+                AirDropState.playerCrates[args.crateName] = nil
+                debugMsg("[CLEANUP] Follow-up confirmed crate absent and cleared tracking: " .. args.crateName)
+            end
+            return
+        end
+
+        local latestData = AirDropState.playerCrates[args.crateName] or args.crateData
+        debugMsg("[CLEANUP] Follow-up removal attempt for crate still present via " .. tostring(existsSource) .. ": " .. args.crateName)
+
+        if runRemovalPass(latestData) then
+            AirDropState.playerCrates[args.crateName] = nil
+            debugMsg("[SUCCESS] Follow-up despawned material crate: " .. args.crateName)
+        else
+            debugMsg("[ERROR] Follow-up failed to despawn crate: " .. args.crateName)
+        end
+    end, {crateName = crateName, crateData = crateData}, timer.getTime() + 1)
+
+    return removedNow
 end
 
 --- Processes DCS world events for crate tracking and player detection.
@@ -1434,23 +1461,7 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
                     despawnedCount = despawnedCount + 1
                     debugMsg("[SUCCESS] Despawned material crate: " .. crateInfo.name)
                 else
-                    debugMsg("[ERROR] Could not despawn crate (all methods failed): " .. crateInfo.name)
-
-                    -- Retry once shortly after to handle dedicated-server replication timing.
-                    local retryCrateName = crateInfo.name
-                    timer.scheduleFunction(function(args)
-                        local trackedData = AirDropState.playerCrates[args.crateName]
-                        if not trackedData then
-                            return
-                        end
-
-                        if removeTrackedCrate(args.crateName, trackedData) then
-                            AirDropState.playerCrates[args.crateName] = nil
-                            debugMsg("[SUCCESS] Retry despawned material crate: " .. args.crateName)
-                        else
-                            debugMsg("[ERROR] Retry failed to despawn crate: " .. args.crateName)
-                        end
-                    end, {crateName = retryCrateName}, timer.getTime() + 1)
+                    debugMsg("[ERROR] Initial despawn pass failed; follow-up removal already scheduled for: " .. crateInfo.name)
                 end
             else
                 debugMsg("[ERROR] Could not despawn crate: invalid crate data in selectedCrates")
