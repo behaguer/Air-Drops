@@ -1,5 +1,28 @@
 # Air Drop Script Changelog
 
+## v0.6.1 - Large FARP Construction
+**Release Date:** August 12, 2026
+
+### Major New Features
+- **Large FARPs**: `make farp` now detects how many containers are nearby and builds a **Large FARP** when double the base materials are present
+  - Base materials: 4x `container_cargo` OR 7x `uh1h_cargo` -> standard FARP (1 helipad)
+  - Double materials: 8x `container_cargo` OR 14x `uh1h_cargo` -> Large FARP (4 helipads)
+- **Double Inventory**: Large FARPs automatically receive double the configured warehouse inventory
+  - Twice the `airframes` (Apache, Ka-50, Black Hawk by default)
+  - Twice the `fuel_jetfuel` and `fuel_avgas`
+- **4 Helipad Visual**: Large FARPs spawn with the 4-pad `FARPs` shape and keep all existing functionality (ATC comms, refuel/rearm, dynamic spawn with hot starts)
+
+### Technical Improvements
+- `spawnFunctionalFARP` accepts a `farpSize` parameter (`"standard"` / `"large"`)
+- Warehouse provisioning uses an inventory multiplier (`x1` standard, `x2` large) applied to all airframes and fuel
+- Deployment messages indicate when a Large FARP is built
+- Startup log now reports the correct version (`v0.6.1`) so the running script can be verified against the mission file
+
+### Important Note
+- The `.miz` mission file embeds its own copy of `Air Drop.lua` (`l10n\DEFAULT\`). Edits to the external `.lua` do **not** affect an already-built `.miz` - the embedded script must be refreshed (re-save the mission in the editor, or rebuild the `.miz`)
+
+---
+
 ## v0.6 - Functional FARP Spawning
 **Release Date:** August 11, 2026
 

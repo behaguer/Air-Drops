@@ -105,6 +105,9 @@ local CONFIG = {
                 container_cargo = 4,
                 uh1h_cargo = 7
             }
+            -- NOTE: Providing double the base materials (8x container_cargo OR 14x
+            -- uh1h_cargo) builds a LARGE FARP with 4 helipads and double the
+            -- warehouse inventory (airframes and fuel) configured in FARP_SPAWN.
         }
     },
 
@@ -119,9 +122,11 @@ local CONFIG = {
     -- FARP Settings (dynamically spawned FARP built from CDS crates)
     -- NOTE: ED currently ignores the unlimited* flags on script-spawned FARPs, so
     -- aircraft and fuel are added to the FARP warehouse manually below.
+    -- NOTE: With double the materials a LARGE FARP is spawned using the 4-pad
+    -- "FARPs" shape with double the airframe/fuel inventory below.
     FARP_SPAWN = {
         name_prefix = "FARP",           -- FARP naming: e.g. "FARP ALPHA", "FARP BRAVO" ...
-        shape_name = "FARP",            -- Visual: "FARP" (1 pad), "FARPs" (4 pads) or "invisiblefarp"
+        shape_name = "FARP",            -- Standard FARP visual: "FARP" (1 pad), "FARPs" (4 pads) or "invisiblefarp"
         callsign_id = 1,                -- Heliport callsign index (1-10)
         frequency = 127.5,              -- Heliport radio frequency in MHz (VHF AM/FM band)
         modulation = 0,                 -- 0 = AM, 1 = FM
@@ -1113,9 +1118,12 @@ local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ, customHea
 end
 
 --- Populates a spawned FARP's warehouse with configured aircraft and fuel.
+-- Large FARPs ("large") receive double the configured inventory.
 -- @param farpName Name of the spawned FARP (airbase name)
+-- @param isLarge Whether this is a large FARP (4 pads, double inventory)
 -- @return boolean True if the warehouse was found and populated, false otherwise
-local function provisionFarpWarehouse(farpName)
+local function provisionFarpWarehouse(farpName, isLarge)
+    local multiplier = isLarge and 2 or 1
     local airbase = Airbase.getByName(farpName)
     if not airbase then
         debugMsg("[FARP] Warehouse: airbase not found for '" .. farpName .. "'")
@@ -1131,30 +1139,32 @@ local function provisionFarpWarehouse(farpName)
     local farpConfig = CONFIG.FARP_SPAWN
     local added = 0
     for typeName, count in pairs(farpConfig.airframes or {}) do
-        warehouse:addItem(typeName, count)
+        local addCount = count * multiplier
+        warehouse:addItem(typeName, addCount)
         local have = warehouse:getItemCount(typeName)
-        debugMsg(string.format("[FARP] Warehouse %s: added %d %s, now in inventory: %s", farpName, count, typeName, tostring(have)))
+        debugMsg(string.format("[FARP] Warehouse %s: added %d %s, now in inventory: %s", farpName, addCount, typeName, tostring(have)))
         added = added + 1
     end
-    warehouse:addLiquid(0, farpConfig.fuel_jetfuel or 50000) -- Jet fuel
-    warehouse:addLiquid(1, farpConfig.fuel_avgas or 20000)   -- Avgas
+    warehouse:addLiquid(0, (farpConfig.fuel_jetfuel or 50000) * multiplier) -- Jet fuel
+    warehouse:addLiquid(1, (farpConfig.fuel_avgas or 20000) * multiplier)   -- Avgas
 
-    debugMsg("[FARP] Warehouse populated for '" .. farpName .. "' with " .. added .. " airframe type(s) and fuel")
+    debugMsg("[FARP] Warehouse populated for '" .. farpName .. "' with " .. added .. " airframe type(s) and fuel (inventory x" .. multiplier .. ")")
     return true
 end
 
 --- Retries provisioning the FARP warehouse since it may not be ready right after spawn.
 -- @param farpName Name of the spawned FARP
 -- @param attempt Current attempt number
+-- @param isLarge Whether this is a large FARP (4 pads, double inventory)
 -- @return void
-local function scheduleFarpProvisioning(farpName, attempt)
+local function scheduleFarpProvisioning(farpName, attempt, isLarge)
     attempt = attempt or 1
     if attempt > 10 then
         debugMsg("[FARP] Gave up provisioning warehouse for '" .. farpName .. "' after " .. attempt .. " attempts")
         return
     end
 
-    local ok, result = pcall(provisionFarpWarehouse, farpName)
+    local ok, result = pcall(provisionFarpWarehouse, farpName, isLarge)
     if ok and result then
         debugMsg("[FARP] Warehouse ready for '" .. farpName .. "' on attempt " .. attempt)
         return
@@ -1164,7 +1174,7 @@ local function scheduleFarpProvisioning(farpName, attempt)
     end
 
     timer.scheduleFunction(function()
-        scheduleFarpProvisioning(farpName, attempt + 1)
+        scheduleFarpProvisioning(farpName, attempt + 1, isLarge)
     end, nil, timer.getTime() + 2)
 end
 
@@ -1189,12 +1199,15 @@ local function buildFarpName(counter)
 end
 
 --- Spawns a fully functional FARP (Heliport with ATC comms, refuel/rearm, dynamic spawn).
+-- A "large" FARP uses the 4-pad shape and receives double warehouse inventory.
 -- Spawned via coalition.addGroup with category -1 ("ED's dirty way to spawn FARPs").
 -- @param posX World X coordinate
 -- @param posZ World Z coordinate
+-- @param farpSize FARP size: "standard" (1 pad) or "large" (4 pads, double inventory)
 -- @return boolean, string Spawn success and result
-local function spawnFunctionalFARP(posX, posZ)
+local function spawnFunctionalFARP(posX, posZ, farpSize)
     local farpConfig = CONFIG.FARP_SPAWN
+    local isLarge = farpSize == "large"
 
     AirDropState.farpCounter = (AirDropState.farpCounter or 0) + 1
     local counter = AirDropState.farpCounter
@@ -1206,7 +1219,7 @@ local function spawnFunctionalFARP(posX, posZ)
 
     local farpUnit = {
         ["category"] = "Heliports",
-        ["shape_name"] = farpConfig.shape_name or "FARP",
+        ["shape_name"] = isLarge and "FARPs" or (farpConfig.shape_name or "FARP"),
         ["type"] = "FARP",
         ["name"] = farpName,
         ["heliport_callsign_id"] = callsignId,
@@ -1234,11 +1247,11 @@ local function spawnFunctionalFARP(posX, posZ)
         ["name"] = farpName,
     }
 
-    debugMsg("[FARP] Spawning functional FARP '" .. farpName .. "' (callsign " .. callsignId .. ", freq " .. frequency .. ")")
+    debugMsg("[FARP] Spawning " .. (isLarge and "LARGE (4 pads) " or "STANDARD (1 pad) ") .. "functional FARP '" .. farpName .. "' (callsign " .. callsignId .. ", freq " .. frequency .. ")")
     local success, result = pcall(coalition.addGroup, country.id.USA, -1, farpGroup)
     if success then
         debugMsg("[FARP] FARP spawned: " .. farpName)
-        scheduleFarpProvisioning(farpName)
+        scheduleFarpProvisioning(farpName, nil, isLarge)
     else
         debugMsg("[ERROR] Failed to spawn FARP '" .. farpName .. "': " .. tostring(result))
     end
@@ -1351,7 +1364,7 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     debugMsg("[SUMMARY] Crate Summary: " .. totalTrackedCrates .. " total tracked, " .. airborneOrLandedCrates .. " airborne+landed, " .. #nearbyCrates .. " nearby")
 
     -- Calculate how many units can be made
-    local requiredCrates, unitsToMake, cratesToUse, selectedCrates
+    local requiredCrates, unitsToMake, cratesToUse, selectedCrates, farpSize
     
 	if vehicleType == "FARP"
 	   and type(cargoConfig.materials_required) == "table" then
@@ -1387,8 +1400,6 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 			end
 		end
 
-		unitsToMake = makeAll and maxPossibleUnits or 1
-
 		if maxPossibleUnits == 0 then
 			local requirements = {}
 			for materialType, requiredCount in pairs(materialRequirements) do
@@ -1405,11 +1416,18 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 			return
 		end
 
+		-- Double the base materials builds a LARGE FARP (4 helipads + double warehouse inventory)
+		farpSize = "standard"
+		if maxPossibleUnits >= 2 then
+			farpSize = "large"
+		end
+
+		unitsToMake    = 1
+		requiredCrates = materialRequirements[bestMaterialType]
+		cratesToUse    = farpSize == "large" and requiredCrates * 2 or requiredCrates
+
 		-- Select crates of the chosen material type
 		selectedCrates = {}
-		requiredCrates = materialRequirements[bestMaterialType]
-		cratesToUse    = unitsToMake * requiredCrates
-
 		local materialsUsed = 0
 		for _, crateInfo in ipairs(nearbyCrates) do
 			if materialsUsed >= cratesToUse then break end
@@ -1420,8 +1438,8 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
 		end
 
 		debugMsg(string.format(
-			"[FARP-MATERIALS] Using %d %s containers to build %d FARP(s)",
-			cratesToUse, bestMaterialType, unitsToMake
+			"[FARP-MATERIALS] Using %d %s containers to build a %s FARP",
+			cratesToUse, bestMaterialType, farpSize
 		))
 
 	else
@@ -1494,9 +1512,10 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
                 -- Spawn a fully functional FARP (Heliport with ATC, refuel/rearm, dynamic spawn)
                 debugMsg("[SPAWN] Attempting to spawn functional FARP: " .. itemName)
                 debugMsg("[SPAWN] FARP type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
+                debugMsg("[SPAWN] FARP size: " .. (farpSize or "standard"))
                 debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
 
-                spawnSuccess, spawnResult = spawnFunctionalFARP(unitPosX, unitPosZ)
+                spawnSuccess, spawnResult = spawnFunctionalFARP(unitPosX, unitPosZ, farpSize)
             else
                 -- Spawn a generic static object
                 local staticData = {
@@ -1607,7 +1626,8 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
     
     if spawnedUnits > 0 then
         local unitText = spawnedUnits == 1 and cargoConfig.name or cargoConfig.name .. "s"
-        setMsg("Deploying " .. spawnedUnits .. "x " .. unitText .. " manufactured from " .. cratesToUse .. " containers!", 10 , 0, true)
+        local sizeText = (cargoConfig.type == "FARP" and farpSize == "large") and " (Large)" or ""
+        setMsg("Deploying " .. spawnedUnits .. "x " .. unitText .. sizeText .. " manufactured from " .. cratesToUse .. " containers!", 10 , 0, true)
 
         -- Despawn the selected crates used as materials
         local despawnedCount = 0
@@ -2633,7 +2653,7 @@ end
 -- Initialize the script
 local function initialize()
     debugMsg("========================================")
-    debugMsg("Air Drop Script v0.5 Initializing...")
+    debugMsg("Air Drop Script v0.6.1 Initializing...")
     debugMsg("========================================")
 
     -- Create radio menu after a short delay

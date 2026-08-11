@@ -1,13 +1,26 @@
 ![DCS Airdrop Script for Eagle Dynamics Digital Combat Simulator.](/assets/images/head.png)
 
 # DCS Air Drops for the C130j v0.6
-This is a DCS mission .lua script that allows c130 Air Drops to be called in from the radio menu. It also allows the player to drop CDS crates and use map markers to "manufacture" ground vehicles from dropped CDS supply crates.
+This is a DCS mission .lua script that can be added simply to any mission as a standalone script. This script allows the deployment of dyname FARPS and units through Logistical Air Drops. Manufactured FARPs are fully functional Heliports with ATC radio comms, refuel/rearm, and dynamic aircraft spawn (with hot starts). 
 
-This script includes the spawning of c130's, which will carry 2 weapons platforms for deployment. It has multiple vehicle types including Tanks, APCs, Humvees, SAM systems, and FARP equipment. Once the radio command is issued it will give you a map marker code so you can create a mission map marker in the f10 menu with that code. Manufactured FARPs are fully functional Heliports with ATC radio comms, refuel/rearm, and dynamic aircraft spawn (with hot starts).
+It also allows the players to drop CDS crates and use map markers to "manufacture" ground vehicles from dropped CDS supply crates.It has multiple vehicle types that can be built including Tanks, APCs, Humvees, SAM systems, and FARP equipment. Once the radio command is issued it will give you a map marker code so you can create a mission map marker in the f10 menu with that code. 
 
-If you would like to troubleshoot in the lua script you can turn debugging on which will output messages.
+If you would like to troubleshoot in the lua script you can turn debugging on which will output messages directly to the DCS log. Test crates have been added to the Air Drop sample mission for conveniance but are not requried to be added to your mission.
 
 # Instructions
+
+## Setup
+1. Place the `Air Drop.lua` script in your mission's MISSION SCRIPTS folder
+2. Load the script in the mission editor using the "Do Script" action
+
+Alternatively you can view the Sample mission for setup:
+1. Open the example mission file `Air Drop.miz` in the mission editor
+2. In the mission editor click the Set Rules for trigger icon on the left hand nav menu (3 Down from the text "MIS")
+3. Note the ONCE trigger is set. Click on it
+4. Note the Time More is set to trigger on load
+5. Click the DO SCRIPT FILE and make sure it is linked to the `Air Drop.lua` script
+6. Save the file
+7. Launch the mission
 
 ## Configuration Options
 The script includes several configuration options at the top of the file:
@@ -49,16 +62,7 @@ Airframe keys must be the exact DCS unit type names (not display names) for them
 
 Spawned FARPs are named sequentially using the `name_prefix` and NATO phonetic words (`FARP ALPHA`, `FARP BRAVO`, `FARP CHARLIE`, ...), falling back to numbers beyond ZULU.
 
-## Setup
-1. Place the `Air Drop.lua` script in your mission's MISSION SCRIPTS folder
-2. Load the script in the mission editor using the "Do Script" action
-
-Alternatively:
-1. Open the example mission file `Air Drop.miz` in the mission editor
-2. Click the Set Rules for trigger icon on the left hand nav menu (3 Down from the text "MIS")
-3. Note the ONCE trigger is set. Click on it
-4. Note the Time More is set to trigger on load
-5. Click the DO SCRIPT FILE and make sure it is linked to the `Air Drop.lua` script
+Large FARPs (double the materials) use the 4-pad `FARPs` shape with double the `airframes` and fuel - see **Building a FARP**.
 
 ## Usage
 
@@ -78,12 +82,19 @@ Alternatively:
   - `make mlrs` - M270 MLRS (3 materials required)
   - `make srsam` - Short Range SAM (5 materials required)
   - `make lrsam` - Long Range SAM (5 materials required)
-  - `make farp` - Forward Arming and Refueling Point (4 container_cargo OR 7 uh1h_cargo) - spawns a fully functional FARP
+  - `make farp` - Forward Arming and Refueling Point (see **Building a FARP** below)
 
-### Test Crates
-- Enable `use_test_crates = true` in configuration to use pre-placed test crates
-- Test crates with names matching `cds_crate-test-*` are automatically configured as landed
-- Useful for mission testing without requiring actual air drops
+### Building a FARP
+Place a map marker named `make farp` within 500m of your crates. The script counts how many containers are nearby and builds the matching size:
+
+| Containers within 500m | FARP built |
+|---|---|
+| 4x `container_cargo` or 7x `uh1h_cargo` | Standard FARP (1 helipad) |
+| 8x `container_cargo` or 14x `uh1h_cargo` | **Large FARP** (4 helipads, double warehouse inventory) |
+
+The large FARP automatically gets double the airframes and fuel from `CONFIG.FARP_SPAWN`.
+
+**Testing without a real drop:** place static objects of type `container_cargo` (C-130J mod) or `uh1h_cargo` (stock DCS), name them `cds_crate-test-1`, `cds_crate-test-2`, etc., and keep `use_test_crates = true`. The `cds_crate-test-*` name makes them count as already landed.
 
 ### CMD Point Costs (if Player Tracker available)
 - 2 units (1 C-130): 20 CMD points
@@ -100,7 +111,7 @@ Alternatively:
 - **MLRS (M270)**: 3 materials
 - **Short Range SAM**: 5 materials
 - **Long Range SAM**: 5 materials
-- **FARP**: 4 container_cargo OR 7 uh1h_cargo materials
+- **FARP**: 4 container_cargo OR 7 uh1h_cargo (double the materials builds a Large FARP - see **Building a FARP**)
 
 Container detection includes both dynamic containers (dropped from aircraft) and static containers (pre-placed in mission).
 
