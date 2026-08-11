@@ -1,9 +1,9 @@
 ![DCS Airdrop Script for Eagle Dynamics Digital Combat Simulator.](/assets/images/head.png)
 
-# DCS Air Drops for the C130j v0.5
+# DCS Air Drops for the C130j v0.6
 This is a DCS mission .lua script that allows c130 Air Drops to be called in from the radio menu. It also allows the player to drop CDS crates and use map markers to "manufacture" ground vehicles from dropped CDS supply crates.
 
-This script includes the spawning of c130's, which will carry 2 weapons platforms for deployment. It has multiple vehicle types including Tanks, APCs, Humvees, SAM systems, and FARP equipment. Once the radio command is issued it will give you a map marker code so you can create a mission map marker in the f10 menu with that code.
+This script includes the spawning of c130's, which will carry 2 weapons platforms for deployment. It has multiple vehicle types including Tanks, APCs, Humvees, SAM systems, and FARP equipment. Once the radio command is issued it will give you a map marker code so you can create a mission map marker in the f10 menu with that code. Manufactured FARPs are fully functional Heliports with ATC radio comms, refuel/rearm, and dynamic aircraft spawn (with hot starts).
 
 If you would like to troubleshoot in the lua script you can turn debugging on which will output messages.
 
@@ -22,6 +22,32 @@ local CONFIG = {
     enable_npc_drops = true,         -- Enable/disable NPC air drops
 }
 ```
+
+### FARP Configuration
+FARPs are manufactured as fully functional Heliports. Configure them in `CONFIG.FARP_SPAWN`:
+
+```lua
+FARP_SPAWN = {
+    name_prefix = "FARP",           -- FARP naming: e.g. "FARP ALPHA", "FARP BRAVO" ...
+    shape_name = "FARP",            -- Visual: "FARP" (1 pad), "FARPs" (4 pads) or "invisiblefarp"
+    callsign_id = 1,                -- Heliport callsign index (1-10)
+    frequency = 127.5,              -- Heliport radio frequency in MHz (VHF AM/FM band)
+    modulation = 0,                 -- 0 = AM, 1 = FM
+    dynamic_spawn = true,           -- Allow dynamic aircraft spawn from this FARP
+    allow_hot_start = true,         -- Allow hot starts for dynamically spawned aircraft
+    airframes = {                   -- Aircraft available in the FARP warehouse: DCS unit typeName = quantity
+        ["AH-64D_BLK_II"] = 5,     -- Apache AH-64D
+        ["Ka-50_3"] = 5,           -- Ka-50 Black Shark 3
+        ["UH-60L"] = 5,            -- UH-60L Black Hawk
+    },
+    fuel_jetfuel = 50000,           -- Jet fuel (liters) in warehouse
+    fuel_avgas = 20000,             -- Aviation gasoline (liters) in warehouse
+}
+```
+
+Airframe keys must be the exact DCS unit type names (not display names) for them to appear in the FARP's dynamic spawn inventory.
+
+Spawned FARPs are named sequentially using the `name_prefix` and NATO phonetic words (`FARP ALPHA`, `FARP BRAVO`, `FARP CHARLIE`, ...), falling back to numbers beyond ZULU.
 
 ## Setup
 1. Place the `Air Drop.lua` script in your mission's MISSION SCRIPTS folder
@@ -52,7 +78,7 @@ Alternatively:
   - `make mlrs` - M270 MLRS (3 materials required)
   - `make srsam` - Short Range SAM (5 materials required)
   - `make lrsam` - Long Range SAM (5 materials required)
-  - `make farp` - Forward Arming and Refueling Point (4 container_cargo OR 7 uh1h_cargo)
+  - `make farp` - Forward Arming and Refueling Point (4 container_cargo OR 7 uh1h_cargo) - spawns a fully functional FARP
 
 ### Test Crates
 - Enable `use_test_crates = true` in configuration to use pre-placed test crates
@@ -77,6 +103,14 @@ Alternatively:
 - **FARP**: 4 container_cargo OR 7 uh1h_cargo materials
 
 Container detection includes both dynamic containers (dropped from aircraft) and static containers (pre-placed in mission).
+
+## Version 0.6 Changes
+
+### Functional FARP Spawning
+- **Real Heliports**: Manufactured FARPs now spawn as functional Heliports (ATC radio comms, refuel/rearm, dynamic aircraft spawn) instead of inert statics
+- **Dynamic Spawn**: FARPs appear in the F10 dynamic spawn menu with hot start support
+- **Warehouse Inventory**: Configured airframes and fuel are automatically added to each spawned FARP's warehouse via the new `CONFIG.FARP_SPAWN` block
+- **Reliable Provisioning**: Warehouse setup retries until the FARP is ready, with per-airframe inventory verification logged
 
 ## Version 0.5 Changes
 

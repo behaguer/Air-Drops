@@ -116,6 +116,26 @@ local CONFIG = {
         ENABLE_POSITION_RANDOMIZATION = true,  -- Enable position randomization
     },
 
+    -- FARP Settings (dynamically spawned FARP built from CDS crates)
+    -- NOTE: ED currently ignores the unlimited* flags on script-spawned FARPs, so
+    -- aircraft and fuel are added to the FARP warehouse manually below.
+    FARP_SPAWN = {
+        name_prefix = "FARP",           -- FARP naming: e.g. "FARP ALPHA", "FARP BRAVO" ...
+        shape_name = "FARP",            -- Visual: "FARP" (1 pad), "FARPs" (4 pads) or "invisiblefarp"
+        callsign_id = 1,                -- Heliport callsign index (1-10)
+        frequency = 127.5,              -- Heliport radio frequency in MHz (VHF AM/FM band)
+        modulation = 0,                 -- 0 = AM, 1 = FM
+        dynamic_spawn = true,           -- Allow dynamic aircraft spawn from this FARP
+        allow_hot_start = true,         -- Allow hot starts for dynamically spawned aircraft
+        airframes = {                   -- Aircraft available in the FARP warehouse: DCS unit typeName = quantity
+            ["AH-64D_BLK_II"] = 5,     -- Apache AH-64D
+            ["Ka-50_3"] = 5,           -- Ka-50 Black Shark 3
+            ["UH-60L"] = 5,            -- UH-60L Black Hawk
+        },
+        fuel_jetfuel = 50000,           -- Jet fuel (liters) in warehouse (liquid type 0)
+        fuel_avgas = 20000,             -- Aviation gasoline (liters) in warehouse (liquid type 1)
+    },
+
     SAM_UNITS = {
         SRSAM = {
             [country.id.CJTF_BLUE] = {
@@ -278,6 +298,7 @@ local AirDropState = {
     initialized = false,
     groupCounter = 0,
     makeCounter = 0,            -- Counter for manufactured vehicles
+    farpCounter = 0,            -- Counter for spawned FARPs
     playerCrates = {},          -- Track dropped cargo crates from players: [unitName] = { unit, spawnTime, been_airborne }
     spawnedGroups = {},         -- Track all spawned aircraft groups: [groupName] = { group, spawnTime }
     activeDrops = {},           -- Track active drop missions: [groupName] = { markerName, vehicleType, qty, status, spawnTime }
@@ -1091,6 +1112,139 @@ local function spawnSAMGroup(samType, groupBaseName, markerX, markerZ, customHea
     end
 end
 
+--- Populates a spawned FARP's warehouse with configured aircraft and fuel.
+-- @param farpName Name of the spawned FARP (airbase name)
+-- @return boolean True if the warehouse was found and populated, false otherwise
+local function provisionFarpWarehouse(farpName)
+    local airbase = Airbase.getByName(farpName)
+    if not airbase then
+        debugMsg("[FARP] Warehouse: airbase not found for '" .. farpName .. "'")
+        return false
+    end
+
+    local warehouse = airbase:getWarehouse()
+    if not warehouse then
+        debugMsg("[FARP] Warehouse: no warehouse found for '" .. farpName .. "'")
+        return false
+    end
+
+    local farpConfig = CONFIG.FARP_SPAWN
+    local added = 0
+    for typeName, count in pairs(farpConfig.airframes or {}) do
+        warehouse:addItem(typeName, count)
+        local have = warehouse:getItemCount(typeName)
+        debugMsg(string.format("[FARP] Warehouse %s: added %d %s, now in inventory: %s", farpName, count, typeName, tostring(have)))
+        added = added + 1
+    end
+    warehouse:addLiquid(0, farpConfig.fuel_jetfuel or 50000) -- Jet fuel
+    warehouse:addLiquid(1, farpConfig.fuel_avgas or 20000)   -- Avgas
+
+    debugMsg("[FARP] Warehouse populated for '" .. farpName .. "' with " .. added .. " airframe type(s) and fuel")
+    return true
+end
+
+--- Retries provisioning the FARP warehouse since it may not be ready right after spawn.
+-- @param farpName Name of the spawned FARP
+-- @param attempt Current attempt number
+-- @return void
+local function scheduleFarpProvisioning(farpName, attempt)
+    attempt = attempt or 1
+    if attempt > 10 then
+        debugMsg("[FARP] Gave up provisioning warehouse for '" .. farpName .. "' after " .. attempt .. " attempts")
+        return
+    end
+
+    local ok, result = pcall(provisionFarpWarehouse, farpName)
+    if ok and result then
+        debugMsg("[FARP] Warehouse ready for '" .. farpName .. "' on attempt " .. attempt)
+        return
+    end
+    if not ok then
+        debugMsg("[FARP] Warehouse provisioning error for '" .. farpName .. "': " .. tostring(result))
+    end
+
+    timer.scheduleFunction(function()
+        scheduleFarpProvisioning(farpName, attempt + 1)
+    end, nil, timer.getTime() + 2)
+end
+
+-- NATO phonetic words used to name spawned FARPs sequentially (FARP ALPHA, FARP BRAVO, ...)
+local FARP_NAME_WORDS = {
+    "ALPHA", "BRAVO", "CHARLIE", "DELTA", "ECHO", "FOXTROT", "GOLF", "HOTEL",
+    "INDIA", "JULIETT", "KILO", "LIMA", "MIKE", "NOVEMBER", "OSCAR", "PAPA",
+    "QUEBEC", "ROMEO", "SIERRA", "TANGO", "UNIFORM", "VICTOR", "WHISKEY",
+    "XRAY", "YANKEE", "ZULU",
+}
+
+--- Builds a unique FARP name from the configured prefix and the spawn counter.
+-- @param counter Spawn counter (1-based)
+-- @return string FARP name (e.g. "FARP ALPHA")
+local function buildFarpName(counter)
+    local prefix = CONFIG.FARP_SPAWN.name_prefix or "FARP"
+    local word = FARP_NAME_WORDS[counter]
+    if word then
+        return prefix .. " " .. word
+    end
+    return prefix .. " " .. counter
+end
+
+--- Spawns a fully functional FARP (Heliport with ATC comms, refuel/rearm, dynamic spawn).
+-- Spawned via coalition.addGroup with category -1 ("ED's dirty way to spawn FARPs").
+-- @param posX World X coordinate
+-- @param posZ World Z coordinate
+-- @return boolean, string Spawn success and result
+local function spawnFunctionalFARP(posX, posZ)
+    local farpConfig = CONFIG.FARP_SPAWN
+
+    AirDropState.farpCounter = (AirDropState.farpCounter or 0) + 1
+    local counter = AirDropState.farpCounter
+    local farpName = buildFarpName(counter)
+
+    -- Unique callsign (1-10) and frequency per FARP so multiple FARPs don't clash
+    local callsignId = ((farpConfig.callsign_id or 1) + counter - 2) % 10 + 1
+    local frequency = (farpConfig.frequency or 127.5) + (counter - 1)
+
+    local farpUnit = {
+        ["category"] = "Heliports",
+        ["shape_name"] = farpConfig.shape_name or "FARP",
+        ["type"] = "FARP",
+        ["name"] = farpName,
+        ["heliport_callsign_id"] = callsignId,
+        ["heliport_frequency"] = frequency,
+        ["heliport_modulation"] = farpConfig.modulation or 0,
+        ["x"] = posX,
+        ["y"] = posZ,
+        ["heading"] = 0,
+        ["dead"] = false,
+    }
+
+    if farpConfig.dynamic_spawn then
+        farpUnit["dynamicSpawn"] = true
+        if farpConfig.allow_hot_start then
+            farpUnit["allowHotStart"] = true
+        end
+    end
+
+    local farpGroup = {
+        ["units"] = { [1] = farpUnit },
+        ["visible"] = true,
+        ["hidden"] = false,
+        ["x"] = posX,
+        ["y"] = posZ,
+        ["name"] = farpName,
+    }
+
+    debugMsg("[FARP] Spawning functional FARP '" .. farpName .. "' (callsign " .. callsignId .. ", freq " .. frequency .. ")")
+    local success, result = pcall(coalition.addGroup, country.id.USA, -1, farpGroup)
+    if success then
+        debugMsg("[FARP] FARP spawned: " .. farpName)
+        scheduleFarpProvisioning(farpName)
+    else
+        debugMsg("[ERROR] Failed to spawn FARP '" .. farpName .. "': " .. tostring(result))
+    end
+    return success, result
+end
+
 --- Handles "make" commands to spawn vehicles and consume nearby crates.
 -- @param marker Map marker data containing position and text
 -- @param vehicleType Type of vehicle to manufacture
@@ -1336,27 +1490,32 @@ local function handleMakeCommand(marker, vehicleType, makeAll)
         local spawnResult = nil
 
         if cargoConfig.category == "static" then
-            -- Spawn static object (like FARP)
-            local staticData = {
-                ["type"] = cargoConfig.type,
-                ["unitId"] = math.random(10000, 99999),
-                ["y"] = unitPosZ,
-                ["x"] = unitPosX,
-                ["name"] = itemName,
-                ["heading"] = 0,
-                ["dead"] = false,
-            }
-
-            debugMsg("[SPAWN] Attempting to spawn static object: " .. itemName)
-            debugMsg("[SPAWN] Static type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
-            debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
-            debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
-
             if cargoConfig.type == "FARP" then
-				-- add advanced farp spawm function here
-            end
+                -- Spawn a fully functional FARP (Heliport with ATC, refuel/rearm, dynamic spawn)
+                debugMsg("[SPAWN] Attempting to spawn functional FARP: " .. itemName)
+                debugMsg("[SPAWN] FARP type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
+                debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
 
-            spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
+                spawnSuccess, spawnResult = spawnFunctionalFARP(unitPosX, unitPosZ)
+            else
+                -- Spawn a generic static object
+                local staticData = {
+                    ["type"] = cargoConfig.type,
+                    ["unitId"] = math.random(10000, 99999),
+                    ["y"] = unitPosZ,
+                    ["x"] = unitPosX,
+                    ["name"] = itemName,
+                    ["heading"] = 0,
+                    ["dead"] = false,
+                }
+
+                debugMsg("[SPAWN] Attempting to spawn static object: " .. itemName)
+                debugMsg("[SPAWN] Static type: " .. cargoConfig.type .. " (" .. cargoConfig.name .. ")")
+                debugMsg("[SPAWN] Spawn position: x=" .. unitPosX .. ", z=" .. unitPosZ)
+                debugMsg("[SPAWN] Unit ID: " .. staticData.unitId)
+
+                spawnSuccess, spawnResult = pcall(coalition.addStaticObject, country.id.USA, staticData)
+            end
 
         elseif cargoConfig.category == "SAM_UNITS" then
             -- Spawn SAM group with multiple units and randomized positioning

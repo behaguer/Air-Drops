@@ -1,5 +1,36 @@
 # Air Drop Script Changelog
 
+## v0.6 - Functional FARP Spawning
+**Release Date:** August 11, 2026
+
+### Major New Features
+- **Fully Functional FARP**: Manufactured FARPs now spawn as real Heliports instead of inert statics
+  - **ATC Radio Comms**: Unique callsign, frequency, and modulation assigned to each spawned FARP
+  - **Dynamic Spawn**: Aircraft can be dynamically spawned from the FARP in the F10 menu
+  - **Hot Starts**: Dynamic spawns from the FARP support hot starts
+- **FARP Warehouse Provisioning**: Airframes and fuel are automatically added to the spawned FARP's warehouse
+  - Configurable airframe inventory (default: Apache AH-64D, Ka-50 Black Shark, UH-60L)
+  - Jet fuel and aviation gasoline loaded automatically
+
+### Configuration Options
+- New `CONFIG.FARP_SPAWN` block:
+  - `name_prefix`: FARP naming prefix (spawned FARPs are named sequentially with NATO phonetic words, e.g. `FARP ALPHA`, `FARP BRAVO`)
+  - `shape_name`: Visual pad ("FARP", "FARPs", or "invisiblefarp")
+  - `callsign_id` / `frequency` / `modulation`: Heliport radio settings
+  - `dynamic_spawn`: Enable dynamic aircraft spawn from the FARP
+  - `allow_hot_start`: Allow hot starts for dynamically spawned aircraft
+  - `airframes`: Aircraft inventory added to the FARP warehouse (DCS typeName = quantity)
+  - `fuel_jetfuel` / `fuel_avgas`: Fuel quantities added to the warehouse
+
+### Technical Improvements
+- FARPs spawn via `coalition.addGroup` with category -1 using DCS's FARP/Heliport format
+- **Warehouse retry logic**: Provisioning retries until the FARP warehouse is available (up to 10 attempts), with per-airframe inventory verification logging
+
+### Bug Fixes
+- Fixed warehouse provisioning silently skipping airframe/fuel setup when the FARP warehouse was not ready immediately after spawn
+
+---
+
 ## v0.4 - SAM Deployment System
 **Release Date:** March 9, 2026
 
